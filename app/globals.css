@@ -1,26 +1,64 @@
 @import "tailwindcss";
 
+/* ── Design tokens ── */
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --bg:       #0c0c0e;
+  --fg:       #f0f0f0;
+  --accent:   #6366f1;
+  --font:     var(--font-geist), system-ui, -apple-system, sans-serif;
+
+  /* Safe area insets for iPhone notch / Dynamic Island */
+  --safe-top:    env(safe-area-inset-top, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-left:   env(safe-area-inset-left, 0px);
+  --safe-right:  env(safe-area-inset-right, 0px);
 }
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
+/* ── Reset ── */
+*, *::before, *::after { box-sizing: border-box; }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+html, body {
+  height: 100%;
+  margin: 0;
+  padding: 0;
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font);
+  -webkit-font-smoothing: antialiased;
+  /* Prevent iOS elastic overscroll showing white background */
+  overscroll-behavior: none;
+}
+
+/* ── Mobile-first base ── */
+
+/* Touch targets: minimum 44×44px per Apple HIG */
+button, a, [role="button"] {
+  min-height: 44px;
+  min-width: 44px;
+  cursor: pointer;
+  touch-action: manipulation;   /* no 300ms tap delay */
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* Prevent iOS input zoom (font-size must be >= 16px) */
+input, textarea, select {
+  font-size: 16px;
+}
+
+/* Smooth scrolling everywhere */
+* {
+  scroll-behavior: smooth;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* ── Standalone PWA chrome ── */
+/* When running as installed PWA, add top padding for status bar */
+@media (display-mode: standalone) {
+  body {
+    padding-top: var(--safe-top);
+    padding-bottom: var(--safe-bottom);
+  }
 }

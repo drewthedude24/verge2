@@ -1,14 +1,86 @@
 {
-  "name": "verge-tmp",
+  "name": "verge",
   "version": "0.1.0",
   "private": true,
+  "description": "Talk through your day. Get a plan.",
+  "author": "Verge",
+  "main": "electron/main.js",
   "scripts": {
-    "dev": "next dev",
-    "build": "next build",
-    "start": "next start",
+    "dev:next": "node node_modules/next/dist/bin/next dev",
+    "dev:electron": "wait-on http://localhost:3000 && electron .",
+    "dev": "concurrently --kill-others --names NEXT,ELECTRON --prefix-colors cyan,magenta \"npm run dev:next\" \"npm run dev:electron\"",
+    "build:next": "node node_modules/next/dist/bin/next build",
+    "build:electron": "electron-builder",
+    "build": "npm run build:next && npm run build:electron",
+    "dist:mac": "npm run build:next && electron-builder --mac",
+    "dist:win": "npm run build:next && electron-builder --win",
+    "dist:all": "npm run build:next && electron-builder --mac --win",
     "lint": "eslint"
   },
+  "build": {
+    "appId": "com.verge.app",
+    "productName": "Verge",
+    "copyright": "Copyright © 2025 Verge",
+    "directories": {
+      "output": "dist",
+      "buildResources": "electron/assets"
+    },
+    "files": [
+      "electron/**/*",
+      ".next/standalone/**/*",
+      ".next/static/**/*",
+      "public/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": ".next/static",
+        "to": ".next/static"
+      }
+    ],
+    "mac": {
+      "icon": "public/icons/icon-512.png",
+      "category": "public.app-category.productivity",
+      "darkModeSupport": true,
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        }
+      ]
+    },
+    "dmg": {
+      "title": "Verge",
+      "backgroundColor": "#0c0c0e"
+    },
+    "win": {
+      "icon": "public/icons/icon-512.png",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "installerIcon": "public/icons/icon-512.png"
+    },
+    "linux": {
+      "icon": "public/icons/icon-512.png",
+      "target": [
+        "AppImage"
+      ]
+    }
+  },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.91.0",
+    "@supabase/supabase-js": "^2.104.1",
     "next": "16.2.4",
     "react": "19.2.4",
     "react-dom": "19.2.4"
@@ -18,9 +90,14 @@
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "concurrently": "^9.1.2",
+    "electron": "^36.3.1",
+    "electron-builder": "^25.1.8",
     "eslint": "^9",
     "eslint-config-next": "16.2.4",
+    "sharp": "^0.34.5",
     "tailwindcss": "^4",
-    "typescript": "^5"
+    "typescript": "^5",
+    "wait-on": "^8.0.3"
   }
 }
