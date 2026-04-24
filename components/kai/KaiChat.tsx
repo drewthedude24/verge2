@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import DesktopShell from "@/components/layout/DesktopShell";
 import { type Message, useKai } from "@/components/kai/use-kai";
 
@@ -45,6 +45,75 @@ function KaiLogo({ size = 16 }: { size?: number }) {
       />
     </svg>
   );
+}
+
+function MicIcon({ active = false }: { active?: boolean }) {
+  return (
+    <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+      <path
+        d="M7 1.75A1.75 1.75 0 0 1 8.75 3.5V7A1.75 1.75 0 0 1 5.25 7V3.5A1.75 1.75 0 0 1 7 1.75Z"
+        stroke={active ? "#18181b" : "currentColor"}
+        strokeWidth="1.3"
+      />
+      <path
+        d="M10.5 6.75A3.5 3.5 0 0 1 3.5 6.75"
+        stroke={active ? "#18181b" : "currentColor"}
+        strokeWidth="1.3"
+        strokeLinecap="round"
+      />
+      <path
+        d="M7 10.5V12.25"
+        stroke={active ? "#18181b" : "currentColor"}
+        strokeWidth="1.3"
+        strokeLinecap="round"
+      />
+      <path
+        d="M4.75 12.25H9.25"
+        stroke={active ? "#18181b" : "currentColor"}
+        strokeWidth="1.3"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
+function mergeDraftText(base: string, finalTranscript: string, interimTranscript = "") {
+  const spoken = `${finalTranscript}${interimTranscript}`.trim();
+  if (!spoken) {
+    return base;
+  }
+
+  const trimmedBase = base.trimEnd();
+  if (!trimmedBase) {
+    return spoken;
+  }
+
+  const separator = trimmedBase.endsWith("\n") ? "" : " ";
+  return `${trimmedBase}${separator}${spoken}`;
+}
+
+function mapSpeechError(error: string) {
+  switch (error) {
+    case "not-allowed":
+    case "service-not-allowed":
+      return "Microphone access is blocked for Verge. Allow mic access and try again.";
+    case "audio-capture":
+      return "No microphone was found for dictation.";
+    case "no-speech":
+      return "Kai did not catch any speech on that attempt.";
+    case "network":
+      return "Voice dictation had a network problem. Try again in a moment.";
+    default:
+      return "Voice dictation could not start cleanly. Try again.";
+  }
+}
+
+function subscribeToSpeechSupport() {
+  return () => {};
+}
+
+function getSpeechSupportSnapshot() {
+  return Boolean(window.SpeechRecognition || window.webkitSpeechRecognition);
 }
 
 function TypingIndicator() {
@@ -94,8 +163,14 @@ export default function KaiChat({ viewer, mode, onSignOut }: KaiChatProps) {
   const { messages, isLoading, sendMessage, resetConversation } = useKai();
   const [input, setInput] = useState("");
   const [hasStarted, setHasStarted] = useState(false);
+  const [isListening, setIsListening] = useState(false);
+  const [speechError, setSpeechError] = useState<string | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const recognitionRef = useRef<SpeechRecognition | null>(null);
+  const dictationBaseRef = useRef("");
+  const dictatedTextRef = useRef("");
+  const speechSupported = useSyncExternalStore(subscribeToSpeechSupport, getSpeechSupportSnapshot, () => false);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -111,28 +186,132 @@ export default function KaiChat({ viewer, mode, onSignOut }: KaiChatProps) {
     element.style.height = `${Math.min(element.scrollHeight, 160)}px`;
   }, [input]);
 
+  useEffect(() => {
+    const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!Recognition) {
+      return;
+    }
+
+    const recognition = new Recognition();
+    recognition.continuous = true;
+    recognition.interimResults = true;
+    recognition.lang = navigator.language || "en-US";
+
+    recognition.onstart = () => {
+      setSpeechError(null);
+      setIsListening(true);
+    };
+
+    recognition.onresult = (event) => {
+      let interimTranscript = "";
+
+      for (let index = event.resultIndex; index < event.results.length; index += 1) {
+        const result = event.results[index];
+        const transcript = result[0]?.transcript || "";
+
+        if (result.isFinal) {
+          dictatedTextRef.current += transcript;
+        } else {
+          interimTranscript += transcript;
+        }
+      }
+
+      setInput(mergeDraftText(dictationBaseRef.current, dictatedTextRef.current, interimTranscript));
+    };
+
+    recognition.onerror = (event) => {
+      setSpeechError(mapSpeechError(event.error));
+      setIsListening(false);
+    };
+
+    recognition.onend = () => {
+      setIsListening(false);
+      const finalDraft = mergeDraftText(dictationBaseRef.current, dictatedTextRef.current);
+      setInput(finalDraft);
+      dictationBaseRef.current = finalDraft;
+      dictatedTextRef.current = "";
+    };
+
+    recognitionRef.current = recognition;
+
+    return () => {
+      recognition.onstart = null;
+      recognition.onresult = null;
+      recognition.onerror = null;
+      recognition.onend = null;
+      recognition.abort();
+      recognitionRef.current = null;
+    };
+  }, []);
+
   const firstName = viewer.name.split(" ")[0] || viewer.email?.split("@")[0] || "there";
+
+  function stopListening() {
+    recognitionRef.current?.stop();
+  }
+
+  function toggleListening() {
+    if (!recognitionRef.current || !speechSupported || isLoading) {
+      if (!speechSupported) {
+        setSpeechError("Voice dictation is not available in this environment.");
+      }
+      return;
+    }
+
+    setSpeechError(null);
+
+    if (isListening) {
+      stopListening();
+      return;
+    }
+
+    dictationBaseRef.current = input;
+    dictatedTextRef.current = "";
+
+    try {
+      recognitionRef.current.start();
+    } catch {
+      setSpeechError("Voice dictation could not start cleanly. Try again.");
+    }
+  }
 
   async function handleSend() {
     if (!input.trim() || isLoading) {
       return;
     }
 
+    if (isListening) {
+      stopListening();
+    }
+
     const text = input.trim();
     setInput("");
     setHasStarted(true);
+    setSpeechError(null);
     await sendMessage(text);
   }
 
   async function handleStarter(text: string) {
+    if (isListening) {
+      stopListening();
+    }
+
     setHasStarted(true);
+    setSpeechError(null);
     await sendMessage(text);
   }
 
   function handleReset() {
+    if (isListening) {
+      stopListening();
+    }
+
     resetConversation();
     setHasStarted(false);
     setInput("");
+    setSpeechError(null);
+    dictatedTextRef.current = "";
+    dictationBaseRef.current = "";
   }
 
   function handleKeyDown(event: React.KeyboardEvent<HTMLTextAreaElement>) {
@@ -140,6 +319,15 @@ export default function KaiChat({ viewer, mode, onSignOut }: KaiChatProps) {
       event.preventDefault();
       void handleSend();
     }
+  }
+
+  function handleInputChange(event: React.ChangeEvent<HTMLTextAreaElement>) {
+    if (isListening) {
+      stopListening();
+    }
+
+    setInput(event.target.value);
+    setSpeechError(null);
   }
 
   return (
@@ -253,12 +441,26 @@ export default function KaiChat({ viewer, mode, onSignOut }: KaiChatProps) {
               ref={inputRef}
               rows={1}
               value={input}
-              onChange={(event) => setInput(event.target.value)}
+              onChange={handleInputChange}
               onKeyDown={handleKeyDown}
               placeholder={hasStarted ? "Reply to Kai..." : "Tell Kai about your week..."}
               disabled={isLoading}
               className="max-h-[160px] flex-1 resize-none bg-transparent text-sm leading-relaxed text-white/90 outline-none placeholder:text-white/25 disabled:opacity-40"
             />
+            <button
+              onClick={toggleListening}
+              disabled={isLoading || !speechSupported}
+              aria-label={isListening ? "Stop voice dictation" : "Start voice dictation"}
+              aria-pressed={isListening}
+              className={`mb-0.5 flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-xl transition ${
+                isListening
+                  ? "bg-orange-300 text-zinc-900 shadow-[0_0_0_8px_rgba(251,191,36,0.08)]"
+                  : "border border-white/10 bg-white/[0.06] text-white/70 hover:border-white/20 hover:bg-white/10 hover:text-white"
+              } disabled:cursor-default disabled:opacity-25`}
+              type="button"
+            >
+              <MicIcon active={isListening} />
+            </button>
             <button
               onClick={() => void handleSend()}
               disabled={!input.trim() || isLoading}
@@ -277,9 +479,18 @@ export default function KaiChat({ viewer, mode, onSignOut }: KaiChatProps) {
               </svg>
             </button>
           </div>
-          <p className="mt-3 text-center text-[11px] text-white/18">
-            Kai plans around energy, buffers, and deadlines instead of treating the calendar like a
-            wall of equal blocks.
+          <p
+            className={`mt-3 text-center text-[11px] ${
+              speechError ? "text-amber-200/80" : isListening ? "text-orange-100/80" : "text-white/18"
+            }`}
+          >
+            {speechError
+              ? speechError
+              : isListening
+                ? "Listening now. Verge is adding your words into the draft."
+                : speechSupported
+                  ? "Tap the mic to speak into the draft. Kai still plans around energy, buffers, and deadlines instead of treating the calendar like a wall of equal blocks."
+                  : "Kai plans around energy, buffers, and deadlines instead of treating the calendar like a wall of equal blocks."}
           </p>
         </footer>
       </section>

@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Menu, ipcMain, shell } = require("electron");
+const { app, BrowserWindow, Menu, ipcMain, screen, session, shell } = require("electron");
 const path = require("path");
 const { spawn } = require("child_process");
 const http = require("http");
@@ -6,8 +6,21 @@ const http = require("http");
 const isDev = !app.isPackaged;
 const NEXT_PORT = 3000;
 const NEXT_HOST = "localhost";
+const FULL_WINDOW = {
+  width: 1340,
+  height: 860,
+  minWidth: 980,
+  minHeight: 680,
+};
+const COMPACT_WINDOW = {
+  width: 580,
+  height: 94,
+  topInset: 14,
+};
 const windowState = {
   alwaysOnTop: true,
+  compact: false,
+  expandedBounds: null,
 };
 
 let mainWindow = null;
@@ -80,15 +93,106 @@ function startNextServer() {
 function getWindowSnapshot() {
   return {
     alwaysOnTop: windowState.alwaysOnTop,
+    compact: windowState.compact,
   };
+}
+
+function emitWindowState() {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send("window:state-changed", getWindowSnapshot());
+  }
+}
+
+function rememberExpandedBounds() {
+  if (!mainWindow || windowState.compact || mainWindow.isDestroyed()) {
+    return;
+  }
+
+  windowState.expandedBounds = mainWindow.getBounds();
+}
+
+function getCompactBounds() {
+  const anchorBounds =
+    windowState.expandedBounds ||
+    (mainWindow && !mainWindow.isDestroyed() ? mainWindow.getBounds() : null) || {
+      x: 0,
+      y: 0,
+      width: FULL_WINDOW.width,
+      height: FULL_WINDOW.height,
+    };
+  const display = screen.getDisplayMatching(anchorBounds);
+  const { x, y, width } = display.workArea;
+
+  return {
+    width: COMPACT_WINDOW.width,
+    height: COMPACT_WINDOW.height,
+    x: Math.round(x + (width - COMPACT_WINDOW.width) / 2),
+    y: y + COMPACT_WINDOW.topInset,
+  };
+}
+
+function setWindowMode(compact) {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return getWindowSnapshot();
+  }
+
+  if (compact === windowState.compact) {
+    return getWindowSnapshot();
+  }
+
+  if (compact) {
+    rememberExpandedBounds();
+    windowState.compact = true;
+    const bounds = getCompactBounds();
+
+    mainWindow.setResizable(false);
+    mainWindow.setMinimumSize(COMPACT_WINDOW.width, COMPACT_WINDOW.height);
+    mainWindow.setBounds(bounds, true);
+    mainWindow.setAlwaysOnTop(windowState.alwaysOnTop, "screen-saver");
+    mainWindow.show();
+    mainWindow.focus();
+  } else {
+    windowState.compact = false;
+    mainWindow.setResizable(true);
+    mainWindow.setMinimumSize(FULL_WINDOW.minWidth, FULL_WINDOW.minHeight);
+
+    if (windowState.expandedBounds) {
+      mainWindow.setBounds(windowState.expandedBounds, true);
+    } else {
+      mainWindow.setSize(FULL_WINDOW.width, FULL_WINDOW.height, true);
+      mainWindow.center();
+    }
+
+    mainWindow.setAlwaysOnTop(windowState.alwaysOnTop, "screen-saver");
+    mainWindow.show();
+    mainWindow.focus();
+  }
+
+  emitWindowState();
+  return getWindowSnapshot();
+}
+
+function configureSessionPermissions() {
+  const allowedOrigin = `http://${NEXT_HOST}:${NEXT_PORT}`;
+  const allowedPermissions = new Set(["media", "microphone", "audioCapture"]);
+
+  session.defaultSession.setPermissionCheckHandler((_webContents, permission, requestingOrigin) => {
+    return requestingOrigin === allowedOrigin && allowedPermissions.has(permission);
+  });
+
+  session.defaultSession.setPermissionRequestHandler((_webContents, permission, callback, details) => {
+    const requestingUrl = details?.requestingUrl || "";
+    const isAllowed = requestingUrl.startsWith(allowedOrigin) && allowedPermissions.has(permission);
+    callback(isAllowed);
+  });
 }
 
 function createWindow() {
   mainWindow = new BrowserWindow({
-    width: 1340,
-    height: 860,
-    minWidth: 980,
-    minHeight: 680,
+    width: FULL_WINDOW.width,
+    height: FULL_WINDOW.height,
+    minWidth: FULL_WINDOW.minWidth,
+    minHeight: FULL_WINDOW.minHeight,
     frame: false,
     transparent: true,
     hasShadow: true,
@@ -126,6 +230,18 @@ function createWindow() {
   mainWindow.once("ready-to-show", () => {
     mainWindow.show();
     mainWindow.focus();
+    emitWindowState();
+  });
+
+  mainWindow.on("move", rememberExpandedBounds);
+  mainWindow.on("resize", rememberExpandedBounds);
+  mainWindow.on("minimize", (event) => {
+    if (windowState.compact) {
+      return;
+    }
+
+    event.preventDefault();
+    setWindowMode(true);
   });
 
   mainWindow.on("closed", () => {
@@ -136,7 +252,10 @@ function createWindow() {
 function wireIpc() {
   ipcMain.handle("window:get-state", () => getWindowSnapshot());
   ipcMain.handle("window:minimize", () => {
-    mainWindow?.minimize();
+    return setWindowMode(true);
+  });
+  ipcMain.handle("window:restore", () => {
+    return setWindowMode(false);
   });
   ipcMain.handle("window:close", () => {
     mainWindow?.close();
@@ -144,11 +263,13 @@ function wireIpc() {
   ipcMain.handle("window:toggle-always-on-top", () => {
     windowState.alwaysOnTop = !windowState.alwaysOnTop;
     mainWindow?.setAlwaysOnTop(windowState.alwaysOnTop, "screen-saver");
+    emitWindowState();
     return getWindowSnapshot();
   });
 }
 
 app.whenReady().then(async () => {
+  configureSessionPermissions();
   wireIpc();
 
   if (!isDev) {
