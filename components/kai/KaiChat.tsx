@@ -149,7 +149,7 @@ export default function KaiChat({ viewer, mode, onSignOut }: KaiChatProps) {
       subtitle={
         mode === "live"
           ? "Talk through the week and Kai will shape a schedule inside the desktop shell."
-          : "Supabase or Gemini is missing, so the app runs in preview mode instead of breaking."
+          : "Gemini is not configured, so Kai uses a safe fallback instead of breaking."
       }
       contentClassName="grid min-h-0 flex-1 gap-0 lg:grid-cols-[minmax(0,1fr)_320px]"
       actions={
@@ -185,7 +185,9 @@ export default function KaiChat({ viewer, mode, onSignOut }: KaiChatProps) {
               <p className="text-sm font-semibold text-white/90">Kai</p>
               <p className="text-xs text-white/45">
                 {viewer.isGuest
-                  ? "Guest session • local preview"
+                  ? mode === "live"
+                    ? "Guest session • live model"
+                    : "Guest session • preview fallback"
                   : viewer.email
                     ? `Signed in as ${viewer.email}`
                     : "Signed-in session"}

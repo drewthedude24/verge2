@@ -8,34 +8,60 @@ import { createClient, isSupabaseConfigured } from "@/lib/supabase";
 
 export default function RootPage() {
   const [user, setUser] = useState<User | null>(null);
+  const [liveModelConfigured, setLiveModelConfigured] = useState<boolean | null>(null);
   const authConfigured = isSupabaseConfigured();
-  const [loading, setLoading] = useState(authConfigured);
+  const [authLoading, setAuthLoading] = useState(authConfigured);
   const supabase = createClient();
+
+  useEffect(() => {
+    let cancelled = false;
+
+    fetch("/api/kai", { method: "GET", cache: "no-store" })
+      .then(async (response) => {
+        if (!response.ok) {
+          throw new Error("Failed to load Kai status");
+        }
+
+        const payload = (await response.json()) as { liveModelConfigured?: boolean };
+        if (!cancelled) {
+          setLiveModelConfigured(Boolean(payload.liveModelConfigured));
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setLiveModelConfigured(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     if (!supabase) {
       return;
     }
 
-    const timeout = setTimeout(() => setLoading(false), 3_000);
+    const timeout = setTimeout(() => setAuthLoading(false), 3_000);
 
     supabase.auth
       .getSession()
       .then(({ data: { session } }) => {
         clearTimeout(timeout);
         setUser(session?.user ?? null);
-        setLoading(false);
+        setAuthLoading(false);
       })
       .catch(() => {
         clearTimeout(timeout);
-        setLoading(false);
+        setAuthLoading(false);
       });
 
     const {
       data: { subscription },
     } = supabase.auth.onAuthStateChange((_event, session) => {
       setUser(session?.user ?? null);
-      setLoading(false);
+      setAuthLoading(false);
     });
 
     return () => {
@@ -47,7 +73,7 @@ export default function RootPage() {
   const viewer = useMemo<ChatViewer>(() => {
     if (!user) {
       return {
-        name: "Preview",
+        name: "Guest",
         email: null,
         isGuest: true,
       };
@@ -70,6 +96,9 @@ export default function RootPage() {
     await supabase?.auth.signOut();
   }
 
+  const loading = (authConfigured && authLoading) || liveModelConfigured === null;
+  const mode = liveModelConfigured ? "live" : "preview";
+
   if (loading) {
     return (
       <div className="flex h-screen w-screen items-center justify-center bg-[#07090d]">
@@ -89,7 +118,7 @@ export default function RootPage() {
     <KaiChat
       viewer={viewer}
       onSignOut={user ? handleSignOut : undefined}
-      mode={authConfigured ? "live" : "preview"}
+      mode={mode}
     />
   );
 }

@@ -11,6 +11,13 @@ interface Message {
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || "";
 const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-2.5-flash";
 
+export async function GET() {
+  return Response.json({
+    liveModelConfigured: Boolean(GEMINI_API_KEY.trim()),
+    model: GEMINI_API_KEY.trim() ? GEMINI_MODEL : null,
+  });
+}
+
 export async function POST(request: NextRequest) {
   try {
     const { messages }: { messages?: Message[] } = await request.json();
@@ -94,7 +101,7 @@ function buildFallbackReply(messages: Message[]) {
     return `That gives me some good anchors already. What deadline or high-stakes task matters most this week, and when do you usually have your sharpest focus?`;
   }
 
-  return `I’m in preview mode right now, so I’m not relying on a live model for this turn, but I can still shape the plan with you. Give me your fixed commitments, biggest deadline, and your best focus window.`;
+  return `The live model is unavailable for this turn, but I can still shape the plan with you. Give me your fixed commitments, biggest deadline, and your best focus window.`;
 }
 
 function streamText(text: string) {
