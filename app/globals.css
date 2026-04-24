@@ -2,7 +2,7 @@
 
 /* ── Design tokens ── */
 :root {
-  --bg:       #0c0c0e;
+  --bg:       transparent;
   --fg:       #f0f0f0;
   --accent:   #6366f1;
   --font:     var(--font-geist), system-ui, -apple-system, sans-serif;
@@ -28,7 +28,6 @@ body {
   color: var(--fg);
   font-family: var(--font);
   -webkit-font-smoothing: antialiased;
-  /* Prevent iOS elastic overscroll showing white background */
   overscroll-behavior: none;
 }
 

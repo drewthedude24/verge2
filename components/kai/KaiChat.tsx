@@ -1,147 +1,21 @@
 "use client";
 
-// components/kai/KaiChat.tsx
-// Full-screen Kai chat UI — designed to match Verge's dark minimal aesthetic.
-// Drops in after auth. Pass the authenticated user from Supabase via props.
-
 import { useEffect, useRef, useState } from "react";
-import { useKai, Message } from "./use-kai";
-import type { User } from "@supabase/supabase-js";
+import DesktopShell from "@/components/layout/DesktopShell";
+import { type Message, useKai } from "@/components/kai/use-kai";
+
+export interface ChatViewer {
+  name: string;
+  email: string | null;
+  isGuest: boolean;
+}
 
 interface KaiChatProps {
-  user: User;
-  onSignOut: () => void;
+  viewer: ChatViewer;
+  mode: "live" | "preview";
+  onSignOut?: () => void | Promise<void>;
 }
 
-// Typing indicator dots
-function TypingIndicator() {
-  return (
-    <div className="flex items-end gap-3 px-6 py-2">
-      <div className="flex-shrink-0 w-7 h-7 rounded-full bg-white/10 flex items-center justify-center">
-        <KaiLogo size={14} />
-      </div>
-      <div className="flex items-center gap-1.5 px-4 py-3 rounded-2xl rounded-bl-sm bg-white/5 border border-white/8">
-        {[0, 1, 2].map((i) => (
-          <span
-            key={i}
-            className="w-1.5 h-1.5 rounded-full bg-white/40 animate-bounce"
-            style={{ animationDelay: `${i * 0.15}s`, animationDuration: "0.9s" }}
-          />
-        ))}
-      </div>
-    </div>
-  );
-}
-
-// Kai wordmark / logo mark
-function KaiLogo({ size = 16 }: { size?: number }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 16 16" fill="none">
-      <circle cx="8" cy="8" r="7" stroke="white" strokeOpacity="0.9" strokeWidth="1.2" />
-      <path d="M5.5 5L8 8L5.5 11" stroke="white" strokeOpacity="0.9" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
-      <path d="M9 5L11 8L9 11" stroke="white" strokeOpacity="0.5" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  );
-}
-
-// Verge wordmark
-function VergeLogo() {
-  return (
-    <span
-      className="text-sm font-semibold tracking-[0.18em] text-white/80 uppercase select-none"
-      style={{ fontFamily: "var(--font-geist-sans, 'Geist', sans-serif)", letterSpacing: "0.2em" }}
-    >
-      VERGE
-    </span>
-  );
-}
-
-// Individual message bubble
-function MessageBubble({ message }: { message: Message }) {
-  const isUser = message.role === "user";
-
-  // Render schedule blocks with monospace styling
-  const renderContent = (content: string) => {
-    const lines = content.split("\n");
-    const segments: React.ReactNode[] = [];
-    let inSchedule = false;
-    let scheduleLines: string[] = [];
-    let key = 0;
-
-    const flushSchedule = () => {
-      if (scheduleLines.length > 0) {
-        segments.push(
-          <pre
-            key={key++}
-            className="mt-3 mb-2 text-xs leading-relaxed font-mono text-white/70 bg-white/4 border border-white/8 rounded-xl p-4 overflow-x-auto whitespace-pre"
-          >
-            {scheduleLines.join("\n")}
-          </pre>
-        );
-        scheduleLines = [];
-      }
-    };
-
-    for (const line of lines) {
-      // Detect schedule day headers like "MONDAY", "TUESDAY" etc.
-      const isDayHeader = /^(MONDAY|TUESDAY|WEDNESDAY|THURSDAY|FRIDAY|SATURDAY|SUNDAY)$/i.test(line.trim());
-      const isTimeBlock = /^\s+\d{2}:\d{2}/.test(line);
-
-      if (isDayHeader || (inSchedule && isTimeBlock)) {
-        inSchedule = true;
-        scheduleLines.push(line);
-      } else {
-        if (inSchedule) {
-          flushSchedule();
-          inSchedule = false;
-        }
-        if (line.trim()) {
-          segments.push(
-            <p key={key++} className="leading-relaxed">
-              {line}
-            </p>
-          );
-        } else {
-          segments.push(<br key={key++} />);
-        }
-      }
-    }
-    if (inSchedule) flushSchedule();
-    return segments;
-  };
-
-  return (
-    <div className={`flex items-end gap-3 px-6 py-1.5 ${isUser ? "flex-row-reverse" : "flex-row"}`}>
-      {/* Avatar */}
-      {!isUser && (
-        <div className="flex-shrink-0 w-7 h-7 rounded-full bg-white/10 flex items-center justify-center mb-0.5">
-          <KaiLogo size={14} />
-        </div>
-      )}
-
-      {/* Bubble */}
-      <div
-        className={`
-          max-w-[72%] px-4 py-3 text-sm leading-relaxed
-          ${isUser
-            ? "bg-white text-zinc-900 rounded-2xl rounded-br-sm font-medium"
-            : "bg-white/6 text-white/90 rounded-2xl rounded-bl-sm border border-white/8"
-          }
-          ${message.isStreaming ? "animate-pulse" : ""}
-        `}
-        style={{ fontFamily: "var(--font-geist-sans, 'Geist', sans-serif)" }}
-      >
-        {isUser ? (
-          <p>{message.content}</p>
-        ) : (
-          <div className="space-y-0.5">{renderContent(message.content)}</div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-// Suggested starter prompts shown before first message
 const STARTERS = [
   "Build my schedule from scratch",
   "I have a deadline coming up",
@@ -149,168 +23,307 @@ const STARTERS = [
   "I'm a morning person, optimize for that",
 ];
 
-export default function KaiChat({ user, onSignOut }: KaiChatProps) {
+function KaiLogo({ size = 16 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 16 16" fill="none" aria-hidden="true">
+      <circle cx="8" cy="8" r="7" stroke="white" strokeOpacity="0.9" strokeWidth="1.2" />
+      <path
+        d="M5.5 5L8 8L5.5 11"
+        stroke="white"
+        strokeOpacity="0.9"
+        strokeWidth="1.4"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M9 5L11 8L9 11"
+        stroke="white"
+        strokeOpacity="0.5"
+        strokeWidth="1.4"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+function TypingIndicator() {
+  return (
+    <div className="flex items-end gap-3 px-4 py-1 md:px-6">
+      <div className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-2xl border border-white/8 bg-white/6">
+        <KaiLogo size={14} />
+      </div>
+      <div className="flex items-center gap-1.5 rounded-2xl rounded-bl-sm border border-white/8 bg-white/[0.06] px-4 py-3">
+        {[0, 1, 2].map((index) => (
+          <span
+            key={index}
+            className="h-1.5 w-1.5 animate-bounce rounded-full bg-white/40"
+            style={{ animationDelay: `${index * 0.15}s`, animationDuration: "0.9s" }}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function MessageBubble({ message }: { message: Message }) {
+  const isUser = message.role === "user";
+
+  return (
+    <div className={`flex items-end gap-3 px-4 py-1.5 md:px-6 ${isUser ? "flex-row-reverse" : "flex-row"}`}>
+      {!isUser ? (
+        <div className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-2xl border border-white/8 bg-white/6">
+          <KaiLogo size={14} />
+        </div>
+      ) : null}
+
+      <div
+        className={`max-w-[78%] rounded-2xl px-4 py-3 text-sm leading-relaxed md:max-w-[72%] ${
+          isUser
+            ? "rounded-br-sm bg-white text-zinc-900 shadow-[0_10px_30px_rgba(255,255,255,0.08)]"
+            : "rounded-bl-sm border border-white/8 bg-white/[0.06] text-white/90"
+        }`}
+      >
+        <p className="whitespace-pre-wrap">{message.content}</p>
+      </div>
+    </div>
+  );
+}
+
+export default function KaiChat({ viewer, mode, onSignOut }: KaiChatProps) {
   const { messages, isLoading, sendMessage, resetConversation } = useKai();
   const [input, setInput] = useState("");
   const [hasStarted, setHasStarted] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
-  // Auto-scroll to bottom on new messages
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, isLoading]);
 
-  // Auto-resize textarea
   useEffect(() => {
-    const el = inputRef.current;
-    if (!el) return;
-    el.style.height = "auto";
-    el.style.height = Math.min(el.scrollHeight, 140) + "px";
+    const element = inputRef.current;
+    if (!element) {
+      return;
+    }
+
+    element.style.height = "auto";
+    element.style.height = `${Math.min(element.scrollHeight, 160)}px`;
   }, [input]);
 
-  const handleSend = async () => {
-    if (!input.trim() || isLoading) return;
+  const firstName = viewer.name.split(" ")[0] || viewer.email?.split("@")[0] || "there";
+
+  async function handleSend() {
+    if (!input.trim() || isLoading) {
+      return;
+    }
+
     const text = input.trim();
     setInput("");
     setHasStarted(true);
     await sendMessage(text);
-  };
+  }
 
-  const handleStarter = async (text: string) => {
+  async function handleStarter(text: string) {
     setHasStarted(true);
     await sendMessage(text);
-  };
+  }
 
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      handleSend();
-    }
-  };
-
-  const handleReset = () => {
+  function handleReset() {
     resetConversation();
     setHasStarted(false);
     setInput("");
-  };
+  }
 
-  const firstName = user.user_metadata?.full_name?.split(" ")[0]
-    ?? user.email?.split("@")[0]
-    ?? "there";
+  function handleKeyDown(event: React.KeyboardEvent<HTMLTextAreaElement>) {
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      void handleSend();
+    }
+  }
 
   return (
-    <div
-      className="flex flex-col h-screen w-screen bg-zinc-950 text-white overflow-hidden"
-      style={{ fontFamily: "var(--font-geist-sans, 'Geist', sans-serif)" }}
-    >
-      {/* ── Top bar ── */}
-      <header className="flex items-center justify-between px-6 h-14 border-b border-white/6 flex-shrink-0">
-        <div className="flex items-center gap-3">
-          <VergeLogo />
-          <span className="text-white/20 text-xs">×</span>
-          <div className="flex items-center gap-1.5">
-            <KaiLogo size={12} />
-            <span className="text-xs text-white/40 tracking-wide">Kai</span>
-          </div>
-        </div>
-
-        <div className="flex items-center gap-4">
-          {hasStarted && (
+    <DesktopShell
+      badge={mode === "live" ? "Kai Live" : "Kai Preview"}
+      title={mode === "live" ? "Verge desktop planner" : "Verge preview mode"}
+      subtitle={
+        mode === "live"
+          ? "Talk through the week and Kai will shape a schedule inside the desktop shell."
+          : "Supabase or Gemini is missing, so the app runs in preview mode instead of breaking."
+      }
+      contentClassName="grid min-h-0 flex-1 gap-0 lg:grid-cols-[minmax(0,1fr)_320px]"
+      actions={
+        <>
+          {hasStarted ? (
             <button
               onClick={handleReset}
-              className="text-xs text-white/30 hover:text-white/60 transition-colors"
+              className="rounded-full border border-white/10 bg-white/6 px-3 py-2 text-xs text-white/70 transition hover:border-white/20 hover:bg-white/10 hover:text-white"
+              type="button"
             >
               New chat
             </button>
-          )}
-          <div className="flex items-center gap-2">
-            <div className="w-6 h-6 rounded-full bg-white/10 flex items-center justify-center text-xs text-white/50 font-medium">
-              {firstName[0].toUpperCase()}
-            </div>
+          ) : null}
+          {onSignOut ? (
             <button
-              onClick={onSignOut}
-              className="text-xs text-white/30 hover:text-white/60 transition-colors"
+              onClick={() => void onSignOut()}
+              className="rounded-full border border-white/10 bg-white/6 px-3 py-2 text-xs text-white/70 transition hover:border-white/20 hover:bg-white/10 hover:text-white"
+              type="button"
             >
               Sign out
             </button>
-          </div>
-        </div>
-      </header>
-
-      {/* ── Message area ── */}
-      <main className="flex-1 overflow-y-auto" style={{ scrollbarWidth: "none" }}>
-        {!hasStarted ? (
-          /* Welcome state */
-          <div className="flex flex-col items-center justify-center h-full gap-10 px-6 pb-16">
-            <div className="text-center space-y-3">
-              <div className="flex items-center justify-center w-12 h-12 rounded-2xl bg-white/6 border border-white/10 mx-auto mb-6">
-                <KaiLogo size={22} />
-              </div>
-              <h1 className="text-xl font-medium text-white/90">
-                Hey {firstName} — I&apos;m Kai
-              </h1>
-              <p className="text-sm text-white/40 max-w-xs leading-relaxed">
-                Tell me about your week and I&apos;ll build a schedule that actually works with how your brain operates.
+          ) : null}
+        </>
+      }
+    >
+      <section className="flex min-h-0 flex-col border-b border-white/8 lg:border-b-0 lg:border-r">
+        <div className="flex items-center justify-between gap-4 border-b border-white/8 px-4 py-4 md:px-6">
+          <div className="flex items-center gap-3">
+            <div className="flex h-10 w-10 items-center justify-center rounded-2xl border border-white/10 bg-white/6">
+              <KaiLogo size={18} />
+            </div>
+            <div>
+              <p className="text-sm font-semibold text-white/90">Kai</p>
+              <p className="text-xs text-white/45">
+                {viewer.isGuest
+                  ? "Guest session • local preview"
+                  : viewer.email
+                    ? `Signed in as ${viewer.email}`
+                    : "Signed-in session"}
               </p>
             </div>
-
-            {/* Starter chips */}
-            <div className="flex flex-wrap gap-2.5 justify-center max-w-sm">
-              {STARTERS.map((s) => (
-                <button
-                  key={s}
-                  onClick={() => handleStarter(s)}
-                  className="px-4 py-2 text-xs text-white/60 rounded-full border border-white/10 hover:border-white/25 hover:text-white/80 hover:bg-white/4 transition-all duration-150 cursor-pointer"
-                >
-                  {s}
-                </button>
-              ))}
-            </div>
           </div>
-        ) : (
-          /* Conversation */
-          <div className="pt-4 pb-4 space-y-0.5">
-            {messages.map((m) => (
-              <MessageBubble key={m.id} message={m} />
-            ))}
-            {isLoading && messages[messages.length - 1]?.role === "user" && (
-              <TypingIndicator />
-            )}
-            <div ref={bottomRef} />
-          </div>
-        )}
-      </main>
 
-      {/* ── Input bar ── */}
-      <footer className="flex-shrink-0 px-4 pb-5 pt-3 border-t border-white/6">
-        <div className="flex items-end gap-2 bg-white/5 border border-white/10 rounded-2xl px-4 py-3 focus-within:border-white/20 transition-colors">
-          <textarea
-            ref={inputRef}
-            rows={1}
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={handleKeyDown}
-            placeholder={hasStarted ? "Reply to Kai..." : "Tell Kai about your week..."}
-            disabled={isLoading}
-            className="flex-1 bg-transparent text-sm text-white/90 placeholder-white/25 resize-none outline-none leading-relaxed disabled:opacity-40"
-            style={{ maxHeight: "140px", fontFamily: "inherit" }}
-          />
-          <button
-            onClick={handleSend}
-            disabled={!input.trim() || isLoading}
-            className="flex-shrink-0 w-8 h-8 rounded-xl flex items-center justify-center bg-white disabled:opacity-20 hover:bg-white/90 active:scale-95 transition-all duration-100 cursor-pointer disabled:cursor-default mb-0.5"
-            aria-label="Send"
+          <span
+            className={`rounded-full px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.18em] ${
+              mode === "live"
+                ? "border border-emerald-300/20 bg-emerald-300/10 text-emerald-100"
+                : "border border-amber-300/20 bg-amber-300/10 text-amber-100"
+            }`}
           >
-            <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-              <path d="M7 12V2M7 2L3 6M7 2L11 6" stroke="#18181b" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
-            </svg>
-          </button>
+            {mode === "live" ? "Live model" : "Preview fallback"}
+          </span>
         </div>
-        <p className="text-center text-white/15 text-[10px] mt-2.5">
-          Kai builds schedules using energy science — not just your calendar.
-        </p>
-      </footer>
-    </div>
+
+        <main className="flex-1 overflow-y-auto py-4" style={{ scrollbarWidth: "thin" }}>
+          {!hasStarted ? (
+            <div className="flex h-full flex-col items-center justify-center gap-10 px-6 pb-16 text-center">
+              <div className="space-y-4">
+                <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-[20px] border border-white/10 bg-white/6">
+                  <KaiLogo size={22} />
+                </div>
+                <h2 className="text-2xl font-semibold tracking-tight text-white md:text-3xl">
+                  Hey {firstName} — let&apos;s build the week.
+                </h2>
+                <p className="mx-auto max-w-xl text-sm leading-7 text-white/50 md:text-base">
+                  Tell Kai what is fixed, what is urgent, when your energy is best, and what you
+                  refuse to sacrifice. The shell is now set up for desktop use instead of a generic
+                  webpage in a window.
+                </p>
+              </div>
+
+              <div className="flex max-w-xl flex-wrap justify-center gap-2.5">
+                {STARTERS.map((starter) => (
+                  <button
+                    key={starter}
+                    onClick={() => void handleStarter(starter)}
+                    className="rounded-full border border-white/10 bg-white/5 px-4 py-2 text-xs text-white/65 transition hover:border-white/20 hover:bg-white/10 hover:text-white"
+                    type="button"
+                  >
+                    {starter}
+                  </button>
+                ))}
+              </div>
+            </div>
+          ) : (
+            <div className="space-y-0.5 pb-4">
+              {messages.map((message) => (
+                <MessageBubble key={message.id} message={message} />
+              ))}
+              {isLoading && messages[messages.length - 1]?.role === "user" ? <TypingIndicator /> : null}
+              <div ref={bottomRef} />
+            </div>
+          )}
+        </main>
+
+        <footer className="border-t border-white/8 px-4 pb-5 pt-4 md:px-6">
+          <div className="flex items-end gap-2 rounded-[22px] border border-white/10 bg-white/[0.05] px-4 py-3 transition focus-within:border-white/20">
+            <textarea
+              ref={inputRef}
+              rows={1}
+              value={input}
+              onChange={(event) => setInput(event.target.value)}
+              onKeyDown={handleKeyDown}
+              placeholder={hasStarted ? "Reply to Kai..." : "Tell Kai about your week..."}
+              disabled={isLoading}
+              className="max-h-[160px] flex-1 resize-none bg-transparent text-sm leading-relaxed text-white/90 outline-none placeholder:text-white/25 disabled:opacity-40"
+            />
+            <button
+              onClick={() => void handleSend()}
+              disabled={!input.trim() || isLoading}
+              className="mb-0.5 flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-xl bg-white text-zinc-900 transition hover:bg-white/90 disabled:cursor-default disabled:opacity-25"
+              aria-label="Send"
+              type="button"
+            >
+              <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+                <path
+                  d="M7 12V2M7 2L3 6M7 2L11 6"
+                  stroke="#18181b"
+                  strokeWidth="1.6"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              </svg>
+            </button>
+          </div>
+          <p className="mt-3 text-center text-[11px] text-white/18">
+            Kai plans around energy, buffers, and deadlines instead of treating the calendar like a
+            wall of equal blocks.
+          </p>
+        </footer>
+      </section>
+
+      <aside className="flex flex-col gap-4 border-t border-white/8 p-4 lg:border-t-0 lg:p-5">
+        <InfoCard
+          title={mode === "live" ? "Live planner route" : "Preview route"}
+          copy={
+            mode === "live"
+              ? "Gemini-backed chat is enabled. If the provider fails, the route now falls back cleanly instead of crashing the UI."
+              : "This mode keeps the desktop app explorable even before Supabase or Gemini are wired in."
+          }
+        />
+        <InfoCard
+          title="What Kai collects"
+          copy="Fixed commitments, deadlines, sleep rhythm, best focus window, and the things you refuse to sacrifice."
+        />
+        <InfoCard
+          title="Desktop shell"
+          copy="Frameless window, glass surface, and window controls are now managed in the Electron layer instead of being hardcoded browser assumptions."
+        />
+        <div className="rounded-[24px] border border-white/10 bg-white/[0.04] p-4">
+          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-white/35">Starter prompts</p>
+          <div className="mt-4 flex flex-wrap gap-2">
+            {STARTERS.slice(0, 3).map((starter) => (
+              <button
+                key={starter}
+                onClick={() => void handleStarter(starter)}
+                className="rounded-full border border-white/10 bg-white/[0.05] px-3 py-2 text-xs text-white/65 transition hover:border-white/20 hover:bg-white/10 hover:text-white"
+                type="button"
+              >
+                {starter}
+              </button>
+            ))}
+          </div>
+        </div>
+      </aside>
+    </DesktopShell>
+  );
+}
+
+function InfoCard({ title, copy }: { title: string; copy: string }) {
+  return (
+    <article className="rounded-[24px] border border-white/10 bg-white/[0.04] p-4">
+      <strong className="text-sm text-white">{title}</strong>
+      <p className="mt-2 text-sm leading-6 text-white/55">{copy}</p>
+    </article>
   );
 }

@@ -1,8 +1,7 @@
-// components/kai/use-kai.ts
 "use client";
 
-import { useState, useCallback, useRef } from "react";
-import { parseKaiResponse, KaiUserProfile } from "@/lib/kai-prompt";
+import { useCallback, useRef, useState } from "react";
+import { parseKaiResponse, type KaiUserProfile } from "@/lib/kai-prompt";
 
 export interface Message {
   id: string;
@@ -19,129 +18,139 @@ export function useKai() {
   const [latestProfile, setLatestProfile] = useState<KaiUserProfile | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
-  const sendMessage = useCallback(async (userText: string) => {
-    if (!userText.trim() || isLoading) return;
+  const sendMessage = useCallback(
+    async (userText: string) => {
+      if (!userText.trim() || isLoading) {
+        return;
+      }
 
-    // Abort any existing stream
-    abortRef.current?.abort();
-    abortRef.current = new AbortController();
+      abortRef.current?.abort();
+      abortRef.current = new AbortController();
 
-    const userMessage: Message = {
-      id: crypto.randomUUID(),
-      role: "user",
-      content: userText.trim(),
-      timestamp: new Date(),
-    };
+      const cleanedText = userText.trim();
+      const history = messages.map((message) => ({
+        role: message.role,
+        content: message.content.replace(/---DATA_OUTPUT_START---[\s\S]*?---DATA_OUTPUT_END---/, "").trim(),
+      }));
 
-    setMessages((prev) => [...prev, userMessage]);
-    setIsLoading(true);
-
-    const assistantId = crypto.randomUUID();
-    setMessages((prev) => [
-      ...prev,
-      {
-        id: assistantId,
-        role: "assistant",
-        content: "",
+      const userMessage: Message = {
+        id: crypto.randomUUID(),
+        role: "user",
+        content: cleanedText,
         timestamp: new Date(),
-        isStreaming: true,
-      },
-    ]);
+      };
 
-    try {
-      // Build messages array for the API (history + new user message)
-      const apiMessages = [
-        ...messages.map((m) => ({
-          role: m.role,
-          // Strip structured data block from history — not needed in API context
-          content: m.content.replace(
-            /---DATA_OUTPUT_START---[\s\S]*?---DATA_OUTPUT_END---/,
-            ""
-          ).trim(),
-        })),
-        { role: "user" as const, content: userText.trim() },
-      ];
+      const assistantId = crypto.randomUUID();
 
-      const res = await fetch("/api/kai", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ messages: apiMessages }),
-        signal: abortRef.current.signal,
-      });
+      setMessages((prev) => [
+        ...prev,
+        userMessage,
+        {
+          id: assistantId,
+          role: "assistant",
+          content: "",
+          timestamp: new Date(),
+          isStreaming: true,
+        },
+      ]);
+      setIsLoading(true);
 
-      if (!res.ok || !res.body) throw new Error("Stream failed");
+      try {
+        const response = await fetch("/api/kai", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            messages: [...history, { role: "user", content: cleanedText }],
+          }),
+          signal: abortRef.current.signal,
+        });
 
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let fullText = "";
+        if (!response.ok || !response.body) {
+          throw new Error("Stream failed");
+        }
 
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        let fullText = "";
 
-        const chunk = decoder.decode(value, { stream: true });
-        const lines = chunk.split("\n");
+        while (true) {
+          const { done, value } = await reader.read();
+          buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
 
-        for (const line of lines) {
-          if (line.startsWith("data: ")) {
-            const data = line.slice(6);
-            if (data === "[DONE]") break;
-            try {
-              const parsed = JSON.parse(data);
+          const events = buffer.split("\n\n");
+          buffer = events.pop() || "";
+
+          for (const rawEvent of events) {
+            for (const line of rawEvent.split("\n")) {
+              if (!line.startsWith("data: ")) {
+                continue;
+              }
+
+              const payload = line.slice(6).trim();
+              if (!payload || payload === "[DONE]") {
+                continue;
+              }
+
+              const parsed = JSON.parse(payload) as { text?: string };
               if (parsed.text) {
                 fullText += parsed.text;
                 setMessages((prev) =>
-                  prev.map((m) =>
-                    m.id === assistantId
-                      ? { ...m, content: fullText }
-                      : m
-                  )
+                  prev.map((message) =>
+                    message.id === assistantId ? { ...message, content: fullText } : message,
+                  ),
                 );
               }
-            } catch {
-              // skip malformed chunk
             }
           }
+
+          if (done) {
+            break;
+          }
         }
+
+        const { conversationText, structuredData } = parseKaiResponse(fullText);
+
+        if (structuredData) {
+          setLatestProfile(structuredData);
+        }
+
+        setMessages((prev) =>
+          prev.map((message) =>
+            message.id === assistantId
+              ? {
+                  ...message,
+                  content: conversationText || fullText,
+                  structuredData,
+                  isStreaming: false,
+                }
+              : message,
+          ),
+        );
+      } catch (error: unknown) {
+        if (error instanceof Error && error.name === "AbortError") {
+          return;
+        }
+
+        setMessages((prev) =>
+          prev.map((message) =>
+            message.id === assistantId
+              ? {
+                  ...message,
+                  content: "Something went wrong on this turn. Try again in a moment.",
+                  isStreaming: false,
+                }
+              : message,
+          ),
+        );
+      } finally {
+        setIsLoading(false);
       }
-
-      // Parse out structured data from completed response
-      const { conversationText, structuredData } = parseKaiResponse(fullText);
-
-      if (structuredData) {
-        setLatestProfile(structuredData);
-      }
-
-      setMessages((prev) =>
-        prev.map((m) =>
-          m.id === assistantId
-            ? {
-                ...m,
-                content: conversationText,
-                structuredData,
-                isStreaming: false,
-              }
-            : m
-        )
-      );
-    } catch (err: unknown) {
-      if (err instanceof Error && err.name === "AbortError") return;
-      setMessages((prev) =>
-        prev.map((m) =>
-          m.id === assistantId
-            ? {
-                ...m,
-                content:
-                  "Something went wrong — try again in a moment.",
-                isStreaming: false,
-              }
-            : m
-        )
-      );
-    } finally {
-      setIsLoading(false);
-    }
-  }, [messages, isLoading]);
+    },
+    [isLoading, messages],
+  );
 
   const resetConversation = useCallback(() => {
     abortRef.current?.abort();
@@ -150,5 +159,11 @@ export function useKai() {
     setIsLoading(false);
   }, []);
 
-  return { messages, isLoading, latestProfile, sendMessage, resetConversation };
+  return {
+    messages,
+    isLoading,
+    latestProfile,
+    sendMessage,
+    resetConversation,
+  };
 }

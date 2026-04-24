@@ -1,36 +1,75 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Verge
 
-## Getting Started
+Verge is a desktop-first planning app built with Next.js and Electron. You talk through your week, Kai helps shape a schedule, and the app runs inside a transparent desktop shell instead of feeling like a regular browser tab.
 
-First, run the development server:
+## What changed
+
+- the Electron shell is now frameless, glassy, and desktop-oriented
+- lint no longer fails on the Electron runtime files
+- Next builds no longer crash when Supabase env vars are missing
+- Gemini chat is routed through a safer server path with preview fallback mode
+- the login, root page, and dashboard flow are easier to follow
+
+## Run locally
+
+1. Install dependencies:
+
+```bash
+npm install
+```
+
+2. Create your local env file:
+
+```bash
+cp .env.local.example .env.local
+```
+
+3. Add whichever credentials you have:
+
+- `NEXT_PUBLIC_SUPABASE_URL`
+- `NEXT_PUBLIC_SUPABASE_ANON_KEY`
+- `GEMINI_API_KEY`
+
+If Supabase is missing, Verge still runs in preview mode.
+If Gemini is missing, Kai falls back to preview responses instead of breaking.
+
+## Development
+
+Run the web app and Electron shell together:
 
 ```bash
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Run lint:
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+```bash
+npm run lint
+```
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+Build the Next standalone app:
 
-## Learn More
+```bash
+npm run build:next
+```
 
-To learn more about Next.js, take a look at the following resources:
+Package desktop builds:
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+```bash
+npm run dist:mac
+npm run dist:win
+```
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+## Structure
 
-## Deploy on Vercel
+- `app/` — Next app routes and API
+- `components/auth/` — auth UI
+- `components/kai/` — chat UI and state
+- `components/layout/` — shared desktop shell
+- `electron/` — Electron main/preload runtime
+- `lib/` — prompts and config helpers
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+## Notes
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+- Set `OPEN_ELECTRON_DEVTOOLS=1` if you want devtools to open automatically in Electron.
+- The home page is the main app surface now. `/dashboard` just redirects back to `/`.

@@ -1,13 +1,5 @@
-import { createClient } from "@supabase/supabase-js";
+import { createClient, getSupabaseConfig, isSupabaseConfigured } from "@/lib/supabase";
 
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
+export const supabase = createClient();
 
-if (!supabaseUrl || !supabaseAnonKey) {
-  throw new Error(
-    "Missing NEXT_PUBLIC_SUPABASE_URL or NEXT_PUBLIC_SUPABASE_ANON_KEY. " +
-      "Copy .env.local.example to .env.local and fill in your Supabase project credentials."
-  );
-}
-
-export const supabase = createClient(supabaseUrl, supabaseAnonKey);
+export { createClient, getSupabaseConfig, isSupabaseConfigured };

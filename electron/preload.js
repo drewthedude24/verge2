@@ -1,8 +1,12 @@
-const { contextBridge } = require("electron");
+const { contextBridge, ipcRenderer } = require("electron");
 
-// Expose a minimal, safe API surface to the renderer (Next.js frontend).
-// Never expose ipcRenderer or Node APIs directly.
 contextBridge.exposeInMainWorld("electron", {
-  platform: process.platform,       // "darwin" | "win32" | "linux"
-  isDesktop: true,                  // lets the app know it's running in Electron
+  platform: process.platform,
+  isDesktop: true,
+  window: {
+    getState: () => ipcRenderer.invoke("window:get-state"),
+    minimize: () => ipcRenderer.invoke("window:minimize"),
+    close: () => ipcRenderer.invoke("window:close"),
+    toggleAlwaysOnTop: () => ipcRenderer.invoke("window:toggle-always-on-top"),
+  },
 });

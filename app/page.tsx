@@ -1,28 +1,26 @@
 "use client";
 
-// app/page.tsx
-// Root page — handles auth state and switches between your existing sign-in
-// screen and the Kai full-screen chat. Replace <YourSignInComponent /> with
-// whatever your existing sign-in screen component is called.
-
-import { useEffect, useState } from "react";
-import { createClient } from "@/lib/supabase";
+import { useEffect, useMemo, useState } from "react";
 import type { User } from "@supabase/supabase-js";
-import KaiChat from "@/components/kai/KaiChat";
-
-// ⬇️ Replace this import with your actual existing sign-in component
 import SignIn from "@/components/auth/SignIn";
+import KaiChat, { type ChatViewer } from "@/components/kai/KaiChat";
+import { createClient, isSupabaseConfigured } from "@/lib/supabase";
 
 export default function RootPage() {
   const [user, setUser] = useState<User | null>(null);
-  const [loading, setLoading] = useState(true);
+  const authConfigured = isSupabaseConfigured();
+  const [loading, setLoading] = useState(authConfigured);
   const supabase = createClient();
 
   useEffect(() => {
-    // Fallback: if getSession hangs for more than 3s, show sign-in anyway
-    const timeout = setTimeout(() => setLoading(false), 3000);
+    if (!supabase) {
+      return;
+    }
 
-    supabase.auth.getSession()
+    const timeout = setTimeout(() => setLoading(false), 3_000);
+
+    supabase.auth
+      .getSession()
       .then(({ data: { session } }) => {
         clearTimeout(timeout);
         setUser(session?.user ?? null);
@@ -33,11 +31,12 @@ export default function RootPage() {
         setLoading(false);
       });
 
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(
-      (_event, session) => {
-        setUser(session?.user ?? null);
-      }
-    );
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((_event, session) => {
+      setUser(session?.user ?? null);
+      setLoading(false);
+    });
 
     return () => {
       clearTimeout(timeout);
@@ -45,32 +44,52 @@ export default function RootPage() {
     };
   }, [supabase]);
 
-  const handleSignOut = async () => {
-    await supabase.auth.signOut();
-  };
+  const viewer = useMemo<ChatViewer>(() => {
+    if (!user) {
+      return {
+        name: "Preview",
+        email: null,
+        isGuest: true,
+      };
+    }
 
-  // Loading splash — matches Verge's dark aesthetic
+    const displayName =
+      user.user_metadata?.full_name ||
+      user.user_metadata?.name ||
+      user.email?.split("@")[0] ||
+      "Verge";
+
+    return {
+      name: displayName,
+      email: user.email ?? null,
+      isGuest: false,
+    };
+  }, [user]);
+
+  async function handleSignOut() {
+    await supabase?.auth.signOut();
+  }
+
   if (loading) {
     return (
-      <div className="flex items-center justify-center h-screen w-screen bg-zinc-950">
+      <div className="flex h-screen w-screen items-center justify-center bg-[#07090d]">
         <div className="flex flex-col items-center gap-4">
-          <span
-            className="text-xs font-semibold tracking-[0.2em] text-white/20 uppercase"
-            style={{ fontFamily: "var(--font-geist-sans, 'Geist', sans-serif)" }}
-          >
-            VERGE
-          </span>
-          <div className="w-4 h-4 rounded-full border border-white/20 border-t-white/60 animate-spin" />
+          <span className="text-xs font-semibold uppercase tracking-[0.2em] text-white/25">VERGE</span>
+          <div className="h-4 w-4 animate-spin rounded-full border border-white/20 border-t-white/60" />
         </div>
       </div>
     );
   }
 
-  // Not authenticated → show your existing sign-in screen
-  if (!user) {
+  if (authConfigured && !user) {
     return <SignIn />;
   }
 
-  // Authenticated → show Kai full-screen chat
-  return <KaiChat user={user} onSignOut={handleSignOut} />;
+  return (
+    <KaiChat
+      viewer={viewer}
+      onSignOut={user ? handleSignOut : undefined}
+      mode={authConfigured ? "live" : "preview"}
+    />
+  );
 }

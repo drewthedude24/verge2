@@ -1,18 +1,33 @@
-// lib/supabase.ts
-// Browser-side Supabase singleton.
-// Adapted from the Kai integration — uses @supabase/supabase-js directly
-// (no @supabase/ssr needed for this client-only Electron app).
-
 import { createClient as createSupabaseClient } from "@supabase/supabase-js";
 
-let _client: ReturnType<typeof createSupabaseClient> | null = null;
+type BrowserSupabaseClient = ReturnType<typeof createSupabaseClient>;
 
-export function createClient() {
-  if (!_client) {
-    _client = createSupabaseClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL!,
-      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-    );
+let browserClient: BrowserSupabaseClient | null = null;
+
+export function getSupabaseConfig() {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL?.trim() || "";
+  const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY?.trim() || "";
+
+  return {
+    url,
+    anonKey,
+    configured: Boolean(url && anonKey),
+  };
+}
+
+export function isSupabaseConfigured() {
+  return getSupabaseConfig().configured;
+}
+
+export function createClient(): BrowserSupabaseClient | null {
+  const config = getSupabaseConfig();
+  if (!config.configured) {
+    return null;
   }
-  return _client;
+
+  if (!browserClient) {
+    browserClient = createSupabaseClient(config.url, config.anonKey);
+  }
+
+  return browserClient;
 }

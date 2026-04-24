@@ -1,18 +1,15 @@
 "use client";
 
-// components/auth/SignIn.tsx
-// Extracted from app/login/page.tsx — the standalone auth form.
-// Used by app/page.tsx as the unauthenticated state.
-// Uses createClient() from lib/supabase.ts so auth state flows through
-// the onAuthStateChange listener in page.tsx (no router.push needed).
-
-import { useState, FormEvent } from "react";
-import { createClient } from "@/lib/supabase";
+import Link from "next/link";
+import { useState, type FormEvent } from "react";
+import DesktopShell from "@/components/layout/DesktopShell";
+import { createClient, isSupabaseConfigured } from "@/lib/supabase";
 
 type Mode = "signin" | "signup";
 
 export default function SignIn() {
   const supabase = createClient();
+  const authConfigured = isSupabaseConfigured();
 
   const [mode, setMode] = useState<Mode>("signin");
   const [email, setEmail] = useState("");
@@ -21,112 +18,214 @@ export default function SignIn() {
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
 
-  const clearMessages = () => { setError(null); setSuccess(null); };
+  function clearMessages() {
+    setError(null);
+    setSuccess(null);
+  }
 
-  const switchMode = (next: Mode) => { setMode(next); clearMessages(); };
-
-  const handleSubmit = async (e: FormEvent) => {
-    e.preventDefault();
+  function switchMode(next: Mode) {
+    setMode(next);
     clearMessages();
+  }
+
+  async function handleSubmit(event: FormEvent) {
+    event.preventDefault();
+    clearMessages();
+
+    if (!supabase) {
+      setError("Supabase is not configured yet. Add your project credentials to .env.local first.");
+      return;
+    }
+
     setLoading(true);
 
     try {
       if (mode === "signup") {
-        const { error } = await supabase.auth.signUp({ email, password });
-        if (error) throw error;
-        setSuccess("Account created! Check your email to confirm, then sign in.");
+        const { error: signUpError } = await supabase.auth.signUp({ email, password });
+        if (signUpError) {
+          throw signUpError;
+        }
+        setSuccess("Account created. Check your email to confirm it, then sign in.");
       } else {
-        const { error } = await supabase.auth.signInWithPassword({ email, password });
-        if (error) throw error;
-        // No router.push — page.tsx's onAuthStateChange picks up the session automatically
+        const { error: signInError } = await supabase.auth.signInWithPassword({ email, password });
+        if (signInError) {
+          throw signInError;
+        }
       }
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Something went wrong. Try again.");
     } finally {
       setLoading(false);
     }
-  };
+  }
 
   return (
-    <main className="min-h-screen flex items-center justify-center bg-[#0c0c0e] px-4">
-      <div aria-hidden className="pointer-events-none fixed inset-0 flex items-center justify-center">
-        <div className="h-[520px] w-[520px] rounded-full bg-orange-600/10 blur-[120px]" />
-      </div>
-
-      <div className="relative w-full max-w-sm">
-        <div className="mb-8 text-center">
-          <span className="text-4xl font-bold tracking-tight text-white">Verge</span>
-          <p className="mt-2 text-sm text-zinc-500">
-            {mode === "signin" ? "Welcome back. Sign in to continue." : "Create your account to get started."}
+    <DesktopShell
+      badge="Verge Auth"
+      title="Sign in to sync Verge"
+      subtitle="Supabase-backed auth is optional. If credentials are missing, the app can still run in preview mode from the home screen."
+      contentClassName="flex items-center justify-center p-4 md:p-10"
+    >
+      <div className="grid w-full max-w-5xl gap-6 md:grid-cols-[1.05fr_0.95fr]">
+        <section className="rounded-[28px] border border-white/10 bg-white/[0.04] p-8 shadow-[inset_0_1px_0_rgba(255,255,255,0.05)]">
+          <span className="rounded-full border border-orange-300/20 bg-orange-300/10 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.2em] text-orange-100">
+            Verge
+          </span>
+          <h2 className="mt-6 max-w-[12ch] text-4xl font-semibold tracking-tight text-white md:text-5xl">
+            Talk through your day and shape the plan.
+          </h2>
+          <p className="mt-4 max-w-xl text-sm leading-7 text-white/55 md:text-base">
+            The desktop shell is now set up to feel like a real floating app. Auth is here if you
+            want synced sessions and persistent users, but it no longer blocks the rest of the app
+            from building or previewing.
           </p>
-        </div>
 
-        <div className="rounded-2xl border border-white/[0.07] bg-white/[0.03] px-8 py-8 shadow-2xl backdrop-blur-sm">
-          <div className="mb-7 flex rounded-lg bg-white/[0.04] p-1">
-            {(["signin", "signup"] as Mode[]).map((m) => (
-              <button
-                key={m}
-                type="button"
-                onClick={() => switchMode(m)}
-                className={`flex-1 rounded-md py-2 text-sm font-medium transition-all duration-200 ${
-                  mode === m ? "bg-[#1a1a1f] text-white shadow-sm" : "text-zinc-500 hover:text-zinc-300"
-                }`}
+          <div className="mt-8 grid gap-4 md:grid-cols-2">
+            <FeatureCard
+              title="Desktop shell"
+              copy="Frameless Electron window, glass surface, and desktop controls are wired in."
+            />
+            <FeatureCard
+              title="Live or preview"
+              copy="With Supabase and Gemini keys, Verge runs live. Without them, it still stays explorable."
+            />
+            <FeatureCard
+              title="Understandable flow"
+              copy="Auth, chat, and desktop behavior are now separated more clearly in the codebase."
+            />
+            <FeatureCard
+              title="Future-safe UI"
+              copy="This shell is ready for planners, transcripts, timers, and AI operators later."
+            />
+          </div>
+        </section>
+
+        <section className="rounded-[28px] border border-white/10 bg-[#0d1117]/92 p-8 shadow-[0_18px_60px_rgba(0,0,0,0.34)]">
+          <div className="mb-6 flex items-center justify-between">
+            <div>
+              <p className="text-xs font-medium uppercase tracking-[0.2em] text-white/35">
+                {authConfigured ? "Auth ready" : "Setup needed"}
+              </p>
+              <h3 className="mt-2 text-2xl font-semibold text-white">
+                {authConfigured ? "Account access" : "Supabase not configured yet"}
+              </h3>
+            </div>
+            {!authConfigured ? (
+              <Link
+                href="/"
+                className="rounded-full border border-white/10 bg-white/6 px-4 py-2 text-xs font-medium text-white/70 transition hover:border-white/20 hover:bg-white/10 hover:text-white"
               >
-                {m === "signin" ? "Sign in" : "Sign up"}
-              </button>
-            ))}
+                Open preview
+              </Link>
+            ) : null}
           </div>
 
-          <form onSubmit={handleSubmit} className="space-y-4">
-            <div className="space-y-1">
-              <label className="block text-xs font-medium text-zinc-400">Email</label>
-              <input
-                type="email" required autoComplete="email"
-                value={email} onChange={(e) => setEmail(e.target.value)}
-                placeholder="you@example.com"
-                className="w-full rounded-lg border border-white/[0.08] bg-white/[0.04] px-4 py-2.5 text-sm text-white placeholder-zinc-600 outline-none transition focus:border-orange-500/60 focus:ring-2 focus:ring-orange-500/20"
-              />
+          {!authConfigured ? (
+            <div className="space-y-4 rounded-2xl border border-amber-300/15 bg-amber-300/8 p-5 text-sm leading-7 text-amber-50/85">
+              <p>
+                Add `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_ANON_KEY` in `.env.local`
+                to enable sign-in. Until then, Verge can still run from the home screen in preview
+                mode.
+              </p>
+              <p className="text-amber-50/65">
+                The build no longer crashes when these values are missing, which makes local setup
+                much less brittle.
+              </p>
             </div>
-
-            <div className="space-y-1">
-              <label className="block text-xs font-medium text-zinc-400">Password</label>
-              <input
-                type="password" required minLength={6}
-                autoComplete={mode === "signup" ? "new-password" : "current-password"}
-                value={password} onChange={(e) => setPassword(e.target.value)}
-                placeholder="••••••••"
-                className="w-full rounded-lg border border-white/[0.08] bg-white/[0.04] px-4 py-2.5 text-sm text-white placeholder-zinc-600 outline-none transition focus:border-orange-500/60 focus:ring-2 focus:ring-orange-500/20"
-              />
-            </div>
-
-            {mode === "signin" && (
-              <div className="flex justify-end">
-                <button type="button" onClick={() => setSuccess("Password reset coming soon.")}
-                  className="text-xs text-zinc-500 transition hover:text-orange-400">
-                  Forgot password?
-                </button>
+          ) : (
+            <>
+              <div className="mb-6 flex rounded-xl bg-white/[0.04] p-1">
+                {(["signin", "signup"] as Mode[]).map((value) => (
+                  <button
+                    key={value}
+                    type="button"
+                    onClick={() => switchMode(value)}
+                    className={`flex-1 rounded-lg py-2.5 text-sm font-medium transition ${
+                      mode === value ? "bg-white/10 text-white" : "text-white/45 hover:text-white/70"
+                    }`}
+                  >
+                    {value === "signin" ? "Sign in" : "Create account"}
+                  </button>
+                ))}
               </div>
-            )}
 
-            {error && <p className="rounded-lg bg-red-500/10 px-4 py-2.5 text-xs text-red-400">{error}</p>}
-            {success && <p className="rounded-lg bg-emerald-500/10 px-4 py-2.5 text-xs text-emerald-400">{success}</p>}
+              <form onSubmit={handleSubmit} className="space-y-4">
+                <label className="block">
+                  <span className="mb-2 block text-xs font-medium uppercase tracking-[0.16em] text-white/45">
+                    Email
+                  </span>
+                  <input
+                    type="email"
+                    required
+                    autoComplete="email"
+                    value={email}
+                    onChange={(event) => setEmail(event.target.value)}
+                    placeholder="you@example.com"
+                    className="w-full rounded-xl border border-white/10 bg-white/[0.04] px-4 py-3 text-sm text-white outline-none transition focus:border-orange-400/60 focus:ring-2 focus:ring-orange-400/15"
+                  />
+                </label>
 
-            <button type="submit" disabled={loading}
-              className="mt-1 w-full rounded-lg bg-orange-600 py-2.5 text-sm font-semibold text-white shadow-lg shadow-orange-900/30 transition hover:bg-orange-500 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50">
-              {loading
-                ? (mode === "signin" ? "Signing in…" : "Creating account…")
-                : (mode === "signin" ? "Sign in" : "Create account")}
-            </button>
-          </form>
-        </div>
+                <label className="block">
+                  <span className="mb-2 block text-xs font-medium uppercase tracking-[0.16em] text-white/45">
+                    Password
+                  </span>
+                  <input
+                    type="password"
+                    required
+                    minLength={6}
+                    autoComplete={mode === "signup" ? "new-password" : "current-password"}
+                    value={password}
+                    onChange={(event) => setPassword(event.target.value)}
+                    placeholder="••••••••"
+                    className="w-full rounded-xl border border-white/10 bg-white/[0.04] px-4 py-3 text-sm text-white outline-none transition focus:border-orange-400/60 focus:ring-2 focus:ring-orange-400/15"
+                  />
+                </label>
 
-        <p className="mt-6 text-center text-xs text-zinc-600">
-          By continuing you agree to our{" "}
-          <span className="cursor-pointer text-zinc-500 hover:text-zinc-400">Terms</span>
-          {" "}&amp;{" "}
-          <span className="cursor-pointer text-zinc-500 hover:text-zinc-400">Privacy Policy</span>.
-        </p>
+                {error ? <MessageTone tone="error">{error}</MessageTone> : null}
+                {success ? <MessageTone tone="success">{success}</MessageTone> : null}
+
+                <button
+                  type="submit"
+                  disabled={loading}
+                  className="w-full rounded-xl bg-orange-500 px-4 py-3 text-sm font-semibold text-white transition hover:bg-orange-400 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {loading
+                    ? mode === "signin"
+                      ? "Signing in…"
+                      : "Creating account…"
+                    : mode === "signin"
+                      ? "Sign in"
+                      : "Create account"}
+                </button>
+              </form>
+            </>
+          )}
+        </section>
       </div>
-    </main>
+    </DesktopShell>
   );
+}
+
+function FeatureCard({ title, copy }: { title: string; copy: string }) {
+  return (
+    <article className="rounded-2xl border border-white/10 bg-black/18 p-4">
+      <strong className="text-sm text-white">{title}</strong>
+      <p className="mt-2 text-sm leading-6 text-white/55">{copy}</p>
+    </article>
+  );
+}
+
+function MessageTone({
+  tone,
+  children,
+}: {
+  tone: "error" | "success";
+  children: React.ReactNode;
+}) {
+  const classes =
+    tone === "error"
+      ? "border border-red-400/20 bg-red-400/10 text-red-100"
+      : "border border-emerald-400/20 bg-emerald-400/10 text-emerald-100";
+
+  return <p className={`rounded-xl px-4 py-3 text-sm ${classes}`}>{children}</p>;
 }

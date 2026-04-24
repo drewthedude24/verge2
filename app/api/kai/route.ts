@@ -1,104 +1,148 @@
-// app/api/kai/route.ts
-// Streams Kai's response using the Gemini API (free tier).
-// Swap GEMINI_MODEL for any Gemini model — gemini-2.0-flash is fast and free.
-// When you're ready for Claude, swap this file for the Anthropic version.
-
-import { KAI_SYSTEM_PROMPT } from "@/lib/kai-prompt";
 import { NextRequest } from "next/server";
-
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY!;
-const GEMINI_MODEL = process.env.GEMINI_MODEL ?? "gemini-2.0-flash";
+import { KAI_SYSTEM_PROMPT } from "@/lib/kai-prompt";
 
 type Role = "user" | "assistant";
-interface Message { role: Role; content: string; }
 
-export async function POST(req: NextRequest) {
+interface Message {
+  role: Role;
+  content: string;
+}
+
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY || "";
+const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-2.5-flash";
+
+export async function POST(request: NextRequest) {
   try {
-    const { messages }: { messages: Message[] } = await req.json();
+    const { messages }: { messages?: Message[] } = await request.json();
 
-    if (!messages || !Array.isArray(messages)) {
+    if (!Array.isArray(messages)) {
       return new Response("Invalid messages payload", { status: 400 });
     }
 
-    // Gemini uses "user" / "model" — map "assistant" → "model"
-    const contents = messages.map((m) => ({
-      role: m.role === "assistant" ? "model" : "user",
-      parts: [{ text: m.content }],
-    }));
+    const text = await generateKaiReply(messages);
+    return streamText(text);
+  } catch (error) {
+    console.error("[Kai API] Error:", error);
+    return streamText(buildFallbackReply([]));
+  }
+}
 
-    const geminiRes = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:streamGenerateContent?alt=sse&key=${GEMINI_API_KEY}`,
+async function generateKaiReply(messages: Message[]) {
+  if (!GEMINI_API_KEY) {
+    return buildFallbackReply(messages);
+  }
+
+  const contents = messages.map((message) => ({
+    role: message.role === "assistant" ? "model" : "user",
+    parts: [{ text: message.content }],
+  }));
+
+  try {
+    const response = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(GEMINI_MODEL)}:generateContent`,
       {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          "x-goog-api-key": GEMINI_API_KEY,
+        },
         body: JSON.stringify({
-          system_instruction: { parts: [{ text: KAI_SYSTEM_PROMPT }] },
+          system_instruction: {
+            parts: [{ text: KAI_SYSTEM_PROMPT }],
+          },
           contents,
           generationConfig: {
-            temperature: 0.7,
+            temperature: 0.75,
             maxOutputTokens: 4096,
           },
         }),
-      }
+      },
     );
 
-    if (!geminiRes.ok || !geminiRes.body) {
-      const err = await geminiRes.text();
-      console.error("[Kai/Gemini] Error:", err);
-      return new Response("Gemini request failed", { status: 502 });
+    if (!response.ok) {
+      const details = await response.text().catch(() => "");
+      throw new Error(`Gemini failed with status ${response.status}. ${details.slice(0, 220)}`);
     }
 
-    // Re-stream Gemini's SSE response in the format use-kai.ts expects:
-    // data: {"text": "..."}\n\n  →  data: [DONE]\n\n
-    const encoder = new TextEncoder();
-    const readable = new ReadableStream({
-      async start(controller) {
-        const reader = geminiRes.body!.getReader();
-        const decoder = new TextDecoder();
+    const payload = await response.json();
+    const text =
+      payload?.candidates?.[0]?.content?.parts
+        ?.map((part: { text?: string }) => part.text || "")
+        .join("")
+        .trim() || "";
 
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-
-          const chunk = decoder.decode(value, { stream: true });
-
-          // Each SSE line looks like: data: {...json...}
-          for (const line of chunk.split("\n")) {
-            if (!line.startsWith("data: ")) continue;
-            const raw = line.slice(6).trim();
-            if (!raw || raw === "[DONE]") continue;
-
-            try {
-              const parsed = JSON.parse(raw);
-              const text =
-                parsed?.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
-              if (text) {
-                controller.enqueue(
-                  encoder.encode(
-                    `data: ${JSON.stringify({ text })}\n\n`
-                  )
-                );
-              }
-            } catch {
-              // skip malformed chunk
-            }
-          }
-        }
-
-        controller.enqueue(encoder.encode("data: [DONE]\n\n"));
-        controller.close();
-      },
-    });
-
-    return new Response(readable, {
-      headers: {
-        "Content-Type": "text/event-stream",
-        "Cache-Control": "no-cache",
-        Connection: "keep-alive",
-      },
-    });
-  } catch (err) {
-    console.error("[Kai API] Error:", err);
-    return new Response("Internal server error", { status: 500 });
+    return text || buildFallbackReply(messages);
+  } catch (error) {
+    console.error("[Kai/Gemini] Falling back:", error);
+    return buildFallbackReply(messages);
   }
+}
+
+function buildFallbackReply(messages: Message[]) {
+  const lastUserMessage = messages.filter((message) => message.role === "user").at(-1)?.content || "";
+  const lower = lastUserMessage.toLowerCase();
+
+  if (!lastUserMessage) {
+    return "Tell me what your week looks like right now. Start with anything fixed, anything urgent, and when your energy tends to be best.";
+  }
+
+  if (/\b(test|quiz|exam|deadline|due|interview|presentation)\b/i.test(lower)) {
+    return `I can already hear the pressure points in that. Before I lay out a plan, what parts of the week are fixed and what time of day do you usually think best?`;
+  }
+
+  if (/\b(class|work|shift|meeting|call|practice|gym|workout)\b/i.test(lower)) {
+    return `That gives me some good anchors already. What deadline or high-stakes task matters most this week, and when do you usually have your sharpest focus?`;
+  }
+
+  return `I’m in preview mode right now, so I’m not relying on a live model for this turn, but I can still shape the plan with you. Give me your fixed commitments, biggest deadline, and your best focus window.`;
+}
+
+function streamText(text: string) {
+  const encoder = new TextEncoder();
+
+  const readable = new ReadableStream({
+    async start(controller) {
+      for (const chunk of chunkText(text)) {
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify({ text: chunk })}\n\n`));
+        await delay(18);
+      }
+      controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+      controller.close();
+    },
+  });
+
+  return new Response(readable, {
+    headers: {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache, no-transform",
+      Connection: "keep-alive",
+    },
+  });
+}
+
+function chunkText(text: string) {
+  const words = String(text || "")
+    .split(/(\s+)/)
+    .filter(Boolean);
+
+  const chunks: string[] = [];
+  let current = "";
+
+  for (const word of words) {
+    current += word;
+    if (current.length >= 24 || /\n/.test(word)) {
+      chunks.push(current);
+      current = "";
+    }
+  }
+
+  if (current) {
+    chunks.push(current);
+  }
+
+  return chunks.length ? chunks : [text];
+}
+
+function delay(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
