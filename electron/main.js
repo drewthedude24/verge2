@@ -161,6 +161,15 @@ function getCompactBounds() {
   };
 }
 
+function syncOverlayPresence() {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return;
+  }
+
+  mainWindow.setAlwaysOnTop(windowState.alwaysOnTop, windowState.alwaysOnTop ? "screen-saver" : "normal");
+  mainWindow.setVisibleOnAllWorkspaces(windowState.alwaysOnTop, { visibleOnFullScreen: windowState.alwaysOnTop });
+}
+
 function setWindowMode(compact) {
   if (!mainWindow || mainWindow.isDestroyed()) {
     return getWindowSnapshot();
@@ -178,7 +187,7 @@ function setWindowMode(compact) {
     mainWindow.setResizable(false);
     mainWindow.setMinimumSize(COMPACT_WINDOW.width, COMPACT_WINDOW.height);
     mainWindow.setBounds(bounds, true);
-    mainWindow.setAlwaysOnTop(windowState.alwaysOnTop, "screen-saver");
+    syncOverlayPresence();
     mainWindow.show();
     mainWindow.focus();
   } else {
@@ -193,7 +202,7 @@ function setWindowMode(compact) {
       mainWindow.center();
     }
 
-    mainWindow.setAlwaysOnTop(windowState.alwaysOnTop, "screen-saver");
+    syncOverlayPresence();
     mainWindow.show();
     mainWindow.focus();
   }
@@ -241,8 +250,7 @@ function createWindow() {
     icon: path.join(__dirname, "../public/icons/icon-512.png"),
   });
 
-  mainWindow.setAlwaysOnTop(windowState.alwaysOnTop, "screen-saver");
-  mainWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  syncOverlayPresence();
 
   Menu.setApplicationMenu(null);
 
@@ -456,7 +464,7 @@ function wireIpc() {
   });
   ipcMain.handle("window:toggle-always-on-top", () => {
     windowState.alwaysOnTop = !windowState.alwaysOnTop;
-    mainWindow?.setAlwaysOnTop(windowState.alwaysOnTop, "screen-saver");
+    syncOverlayPresence();
     emitWindowState();
     return getWindowSnapshot();
   });

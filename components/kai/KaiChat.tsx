@@ -224,6 +224,7 @@ function TypingIndicator() {
 
 function MessageBubble({ message }: { message: Message }) {
   const isUser = message.role === "user";
+  const bubbleStyle = !isUser ? { scrollbarWidth: "thin" as const } : undefined;
 
   return (
     <div className={`flex items-end gap-3 px-4 py-1.5 md:px-6 ${isUser ? "flex-row-reverse" : "flex-row"}`}>
@@ -237,8 +238,9 @@ function MessageBubble({ message }: { message: Message }) {
         className={`max-w-[78%] rounded-2xl px-4 py-3 text-sm leading-relaxed md:max-w-[72%] ${
           isUser
             ? "rounded-br-sm bg-white text-zinc-900 shadow-[0_10px_30px_rgba(255,255,255,0.08)]"
-            : "rounded-bl-sm border border-white/8 bg-white/[0.06] text-white/90"
+            : "max-h-[28rem] overflow-y-auto rounded-bl-sm border border-white/8 bg-white/[0.06] text-white/90"
         }`}
+        style={bubbleStyle}
       >
         <p className="whitespace-pre-wrap">{message.content}</p>
       </div>
@@ -296,8 +298,6 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
       }
 
       if (event.type === "start") {
-        dictatedTextRef.current = "";
-        dictationInterimRef.current = "";
         setSpeechError(null);
         setIsListening(true);
         return;
