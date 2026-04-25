@@ -47,7 +47,7 @@ const CEREBRAS_MODEL = process.env.CEREBRAS_MODEL?.trim() || "qwen-3-235b-a22b-i
 const LLM_PROVIDER = process.env.LLM_PROVIDER?.trim().toLowerCase() || "auto";
 
 export async function GET() {
-  const provider = getConfiguredProvider();
+  const provider = getConfiguredProviders()[0] ?? null;
 
   return Response.json({
     liveModelConfigured: Boolean(provider),
@@ -64,8 +64,8 @@ export async function POST(request: NextRequest) {
       return new Response("Invalid messages payload", { status: 400 });
     }
 
-    const provider = getConfiguredProvider();
-    const text = await generateKaiReply(messages, memory, provider);
+    const providers = getConfiguredProviders();
+    const text = await generateKaiReply(messages, memory, providers);
     return streamText(text);
   } catch (error) {
     console.error("[Kai API] Error:", error);
@@ -73,38 +73,49 @@ export async function POST(request: NextRequest) {
   }
 }
 
-async function generateKaiReply(messages: Message[], memory: string | null | undefined, provider: ProviderConfig | null) {
-  if (!provider) {
+async function generateKaiReply(messages: Message[], memory: string | null | undefined, providers: ProviderConfig[]) {
+  if (!providers.length) {
     return buildFallbackReply(messages);
   }
 
-  try {
-    if (provider.provider === "gemini") {
-      const contents = buildGeminiContents(messages, memory);
-      const text = await generateGeminiReplyWithRetry(provider, contents);
-      return text || buildFallbackReply(messages, undefined, provider);
-    }
+  const geminiContents = buildGeminiContents(messages, memory);
+  const promptMessages = buildOpenAICompatibleMessages(messages, memory);
+  let lastError: Error | undefined;
+  let lastProvider: ProviderConfig | null = null;
 
-    const promptMessages = buildOpenAICompatibleMessages(messages, memory);
-    const text = await generateOpenAICompatibleReplyWithRetry(provider, promptMessages);
-    return text || buildFallbackReply(messages, undefined, provider);
-  } catch (error) {
-    console.error(`[Kai/${formatProviderName(provider.provider)}] Falling back:`, error);
-    return buildFallbackReply(messages, error instanceof Error ? error : undefined, provider);
+  for (const provider of providers) {
+    try {
+      if (provider.provider === "gemini") {
+        const text = await generateGeminiReplyWithRetry(provider, geminiContents);
+        if (text) {
+          return text;
+        }
+      } else {
+        const text = await generateOpenAICompatibleReplyWithRetry(provider, promptMessages);
+        if (text) {
+          return text;
+        }
+      }
+    } catch (error) {
+      lastProvider = provider;
+      lastError = error instanceof Error ? error : new Error(String(error));
+      console.error(`[Kai/${formatProviderName(provider.provider)}] Provider failed, trying next option:`, lastError);
+      continue;
+    }
   }
+
+  return buildFallbackReply(messages, lastError, lastProvider);
 }
 
-function getConfiguredProvider(): ProviderConfig | null {
+function getConfiguredProviders(): ProviderConfig[] {
   if (LLM_PROVIDER !== "auto") {
-    return createProviderConfig(LLM_PROVIDER);
+    const provider = createProviderConfig(LLM_PROVIDER);
+    return provider ? [provider] : [];
   }
 
-  return (
-    createProviderConfig("cerebras") ||
-    createProviderConfig("groq") ||
-    createProviderConfig("openrouter") ||
-    createProviderConfig("gemini")
-  );
+  return (["cerebras", "groq", "openrouter", "gemini"] as const)
+    .map((providerName) => createProviderConfig(providerName))
+    .filter((provider): provider is ProviderConfig => Boolean(provider));
 }
 
 function createProviderConfig(providerName: string): ProviderConfig | null {

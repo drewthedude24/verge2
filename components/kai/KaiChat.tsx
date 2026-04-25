@@ -369,11 +369,11 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
       }
 
       if (event.type === "end") {
-        setIsListening(false);
         dictatedTextRef.current = mergeTranscriptSnapshot(dictatedTextRef.current, dictationInterimRef.current);
         const finalDraft = mergeDraftText(dictationBaseRef.current, "", dictatedTextRef.current);
         const shouldSuppressCommit = suppressNextDictationCommitRef.current;
         suppressNextDictationCommitRef.current = false;
+        const shouldAutoRestart = keepDictationAliveRef.current && !shouldSuppressCommit;
 
         if (!shouldSuppressCommit) {
           setInput(finalDraft);
@@ -383,9 +383,13 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
         dictatedTextRef.current = "";
         dictationInterimRef.current = "";
 
-        if (keepDictationAliveRef.current) {
+        if (shouldAutoRestart) {
+          setIsListening(true);
           restartDesktopDictation();
+          return;
         }
+
+        setIsListening(false);
       }
     });
 
