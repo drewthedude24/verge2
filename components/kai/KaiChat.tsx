@@ -84,6 +84,21 @@ function MicIcon({ active = false }: { active?: boolean }) {
   );
 }
 
+function mergeDraftText(base: string, finalTranscript: string, interimTranscript = "") {
+  const spoken = `${finalTranscript}${interimTranscript}`.trim();
+  if (!spoken) {
+    return base;
+  }
+
+  const trimmedBase = base.trimEnd();
+  if (!trimmedBase) {
+    return spoken;
+  }
+
+  const separator = trimmedBase.endsWith("\n") ? "" : " ";
+  return `${trimmedBase}${separator}${spoken}`;
+}
+
 function mergeTranscriptSnapshot(previousSnapshot: string, nextSnapshot: string) {
   const previous = previousSnapshot.trim();
   const next = nextSnapshot.trim();
@@ -121,42 +136,23 @@ function mergeTranscriptSnapshot(previousSnapshot: string, nextSnapshot: string)
   return `${previous} ${next}`.trim();
 }
 
-function extractTranscriptDelta(previousSnapshot: string, nextSnapshot: string) {
-  const previous = previousSnapshot.trim();
-  const merged = mergeTranscriptSnapshot(previousSnapshot, nextSnapshot).trim();
+function buildTranscriptPreview(committedTranscript: string, interimTranscript: string) {
+  const committed = committedTranscript.trim();
+  const interim = interimTranscript.trim();
 
-  if (!merged) {
-    return "";
+  if (!interim) {
+    return committed;
   }
 
-  if (!previous) {
-    return merged;
+  if (!committed) {
+    return interim;
   }
 
-  if (merged === previous) {
-    return "";
+  if (interim.startsWith(committed)) {
+    return interim;
   }
 
-  if (merged.startsWith(previous)) {
-    return merged.slice(previous.length).trim();
-  }
-
-  return nextSnapshot.trim();
-}
-
-function appendDraftSegment(draft: string, segment: string) {
-  const nextSegment = segment.trim();
-  if (!nextSegment) {
-    return draft;
-  }
-
-  const trimmedDraft = draft.trimEnd();
-  if (!trimmedDraft) {
-    return nextSegment;
-  }
-
-  const separator = trimmedDraft.endsWith("\n") ? "" : " ";
-  return `${trimmedDraft}${separator}${nextSegment}`;
+  return mergeTranscriptSnapshot(committed, interim);
 }
 
 function mapBrowserSpeechError(error: string) {
@@ -275,10 +271,12 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const recognitionRef = useRef<SpeechRecognition | null>(null);
-  const latestDesktopTranscriptRef = useRef("");
+  const dictationBaseRef = useRef("");
+  const dictatedTextRef = useRef("");
+  const dictationInterimRef = useRef("");
   const activeDesktopSessionIdRef = useRef<number | null>(null);
   const keepDictationAliveRef = useRef(false);
-  const discardDictationOutputRef = useRef(false);
+  const suppressNextDictationCommitRef = useRef(false);
   const restartDictationTimerRef = useRef<number | null>(null);
   const pushToTalkActiveRef = useRef(false);
   const persistedRunRef = useRef<{ planKey: string; runId: string } | null>(null);
@@ -399,25 +397,30 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
         clearDictationRestart();
         setSpeechError(null);
         setIsListening(true);
-        discardDictationOutputRef.current = false;
         return;
       }
 
       if (event.type === "transcript") {
-        if (discardDictationOutputRef.current || !event.isFinal) {
-          return;
-        }
-
         const nextTranscript = event.text?.trim() || "";
-        const mergedSnapshot = mergeTranscriptSnapshot(latestDesktopTranscriptRef.current, nextTranscript);
-        const delta = extractTranscriptDelta(latestDesktopTranscriptRef.current, mergedSnapshot);
-        latestDesktopTranscriptRef.current = mergedSnapshot;
-
-        if (!delta) {
+        if (!nextTranscript) {
           return;
         }
 
-        setInput((currentDraft) => appendDraftSegment(currentDraft, delta));
+        if (event.isFinal) {
+          dictatedTextRef.current = mergeTranscriptSnapshot(dictatedTextRef.current, nextTranscript);
+          dictationInterimRef.current = "";
+          setInput(mergeDraftText(dictationBaseRef.current, "", dictatedTextRef.current));
+          return;
+        }
+
+        dictationInterimRef.current = nextTranscript;
+        setInput(
+          mergeDraftText(
+            dictationBaseRef.current,
+            "",
+            buildTranscriptPreview(dictatedTextRef.current, dictationInterimRef.current),
+          ),
+        );
         return;
       }
 
@@ -432,8 +435,19 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
       }
 
       if (event.type === "end") {
-        const shouldAutoRestart = keepDictationAliveRef.current && !discardDictationOutputRef.current;
-        latestDesktopTranscriptRef.current = "";
+        dictatedTextRef.current = mergeTranscriptSnapshot(dictatedTextRef.current, dictationInterimRef.current);
+        const finalDraft = mergeDraftText(dictationBaseRef.current, "", dictatedTextRef.current);
+        const shouldSuppressCommit = suppressNextDictationCommitRef.current;
+        suppressNextDictationCommitRef.current = false;
+        const shouldAutoRestart = keepDictationAliveRef.current && !shouldSuppressCommit;
+
+        if (!shouldSuppressCommit) {
+          setInput(finalDraft);
+          dictationBaseRef.current = finalDraft;
+        }
+
+        dictatedTextRef.current = "";
+        dictationInterimRef.current = "";
 
         if (shouldAutoRestart) {
           setIsListening(true);
@@ -442,7 +456,6 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
         }
 
         activeDesktopSessionIdRef.current = null;
-        discardDictationOutputRef.current = false;
         setIsListening(false);
       }
     });
@@ -478,6 +491,7 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
 
     recognition.onresult = (event) => {
       let finalTranscript = "";
+      let interimTranscript = "";
 
       for (let index = event.resultIndex; index < event.results.length; index += 1) {
         const result = event.results[index];
@@ -485,14 +499,14 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
 
         if (result.isFinal) {
           finalTranscript += transcript;
+        } else {
+          interimTranscript += transcript;
         }
       }
 
-      if (discardDictationOutputRef.current || !finalTranscript.trim()) {
-        return;
-      }
-
-      setInput((currentDraft) => appendDraftSegment(currentDraft, finalTranscript));
+      dictatedTextRef.current = `${dictatedTextRef.current}${finalTranscript}`.trim();
+      const sessionTranscript = `${dictatedTextRef.current} ${interimTranscript}`.trim();
+      setInput(mergeDraftText(dictationBaseRef.current, "", sessionTranscript));
     };
 
     recognition.onerror = (event) => {
@@ -502,7 +516,16 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
 
     recognition.onend = () => {
       setIsListening(false);
-      discardDictationOutputRef.current = false;
+      const finalDraft = mergeDraftText(dictationBaseRef.current, "", dictatedTextRef.current);
+      const shouldSuppressCommit = suppressNextDictationCommitRef.current;
+      suppressNextDictationCommitRef.current = false;
+
+      if (!shouldSuppressCommit) {
+        setInput(finalDraft);
+        dictationBaseRef.current = finalDraft;
+      }
+
+      dictatedTextRef.current = "";
     };
 
     recognitionRef.current = recognition;
@@ -529,9 +552,11 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
 
     setSpeechError(null);
     keepDictationAliveRef.current = isDesktop && Boolean(options?.keepAlive);
-    discardDictationOutputRef.current = false;
+    suppressNextDictationCommitRef.current = false;
     activeDesktopSessionIdRef.current = null;
-    latestDesktopTranscriptRef.current = "";
+    dictationBaseRef.current = input;
+    dictatedTextRef.current = "";
+    dictationInterimRef.current = "";
 
     if (isDesktop) {
       void window.electron?.dictation?.start?.({ language: navigator.language || "en-US" });
@@ -543,11 +568,11 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
     } catch {
       setSpeechError("Voice dictation could not start cleanly. Try again.");
     }
-  }, [isDesktop, isLoading, speechSupported]);
+  }, [input, isDesktop, isLoading, speechSupported]);
 
   const stopListening = useCallback((options?: { preserveDraft?: boolean }) => {
     keepDictationAliveRef.current = false;
-    discardDictationOutputRef.current = options?.preserveDraft === false;
+    suppressNextDictationCommitRef.current = options?.preserveDraft === false;
 
     if (restartDictationTimerRef.current) {
       window.clearTimeout(restartDictationTimerRef.current);
@@ -709,7 +734,9 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
     setInput("");
     setHasStarted(true);
     setSpeechError(null);
-    latestDesktopTranscriptRef.current = "";
+    dictationBaseRef.current = "";
+    dictatedTextRef.current = "";
+    dictationInterimRef.current = "";
     await sendMessage(text);
   }
 
@@ -733,7 +760,9 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
     setHasStarted(false);
     setInput("");
     setSpeechError(null);
-    latestDesktopTranscriptRef.current = "";
+    dictatedTextRef.current = "";
+    dictationInterimRef.current = "";
+    dictationBaseRef.current = "";
     persistedRunRef.current = null;
     lastUserPromptRef.current = "";
     persistRequestPlanKeyRef.current = null;
@@ -755,6 +784,7 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
     }
 
     setInput(event.target.value);
+    dictationBaseRef.current = event.target.value;
     setSpeechError(null);
   }
 
@@ -920,7 +950,7 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
             {speechError
               ? speechError
               : isListening
-                ? "Listening now. Verge only appends committed speech to the draft, so pauses should not wipe earlier text."
+                ? "Listening now. Verge is adding your words into the draft."
                 : speechSupported
                   ? "Tap the mic, or hold Option to record and release to keep the text in the draft. Kai still plans around energy, buffers, and deadlines instead of treating the calendar like a wall of equal blocks."
                   : "Kai plans around energy, buffers, and deadlines instead of treating the calendar like a wall of equal blocks."}
