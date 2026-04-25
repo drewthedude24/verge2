@@ -37,6 +37,7 @@ const dictationState = {
 
 let mainWindow = null;
 let nextServer = null;
+let forceQuitTimer = null;
 
 function startNextServer() {
   return new Promise((resolve, reject) => {
@@ -378,6 +379,43 @@ function cleanupDictationProcess(child) {
   }
 }
 
+function stopNextServer(force = false) {
+  if (!nextServer) {
+    return;
+  }
+
+  try {
+    nextServer.kill(force ? "SIGKILL" : "SIGTERM");
+  } catch {}
+
+  nextServer = null;
+}
+
+function forceQuitApp() {
+  stopNativeDictation();
+  stopNextServer();
+
+  for (const window of BrowserWindow.getAllWindows()) {
+    try {
+      window.destroy();
+    } catch {}
+  }
+
+  if (process.platform === "darwin" && app.dock) {
+    app.dock.hide();
+  }
+
+  if (forceQuitTimer) {
+    clearTimeout(forceQuitTimer);
+  }
+
+  app.quit();
+  forceQuitTimer = setTimeout(() => {
+    stopNextServer(true);
+    process.exit(0);
+  }, 120);
+}
+
 function stopNativeDictation() {
   const child = dictationState.process;
   if (!child) {
@@ -466,13 +504,7 @@ function wireIpc() {
   ipcMain.handle("window:minimize", () => setWindowMode(true));
   ipcMain.handle("window:restore", () => setWindowMode(false));
   ipcMain.handle("window:close", () => {
-    if (process.platform === "darwin" && app.dock) {
-      app.dock.hide();
-    }
-    app.quit();
-    setTimeout(() => {
-      app.exit(0);
-    }, 200);
+    forceQuitApp();
   });
   ipcMain.handle("window:toggle-always-on-top", () => {
     windowState.alwaysOnTop = !windowState.alwaysOnTop;
@@ -521,9 +553,7 @@ app.whenReady().then(async () => {
 
 app.on("window-all-closed", () => {
   stopNativeDictation();
-  if (nextServer) {
-    nextServer.kill();
-  }
+  stopNextServer();
   if (process.platform !== "darwin") {
     app.quit();
   }
@@ -531,7 +561,5 @@ app.on("window-all-closed", () => {
 
 app.on("before-quit", () => {
   stopNativeDictation();
-  if (nextServer) {
-    nextServer.kill();
-  }
+  stopNextServer();
 });

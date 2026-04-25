@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import DesktopShell from "@/components/layout/DesktopShell";
 import { type Message, useKai } from "@/components/kai/use-kai";
 
@@ -23,6 +23,8 @@ const STARTERS = [
   "My week is a mess — help",
   "I'm a morning person, optimize for that",
 ];
+
+const PUSH_TO_TALK_KEY = "Alt";
 
 function KaiLogo({ size = 16 }: { size?: number }) {
   return (
@@ -265,6 +267,7 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
   const keepDictationAliveRef = useRef(false);
   const suppressNextDictationCommitRef = useRef(false);
   const restartDictationTimerRef = useRef<number | null>(null);
+  const pushToTalkActiveRef = useRef(false);
   const isDesktop = useSyncExternalStore(subscribeToDesktopBridge, getDesktopSnapshot, () => false);
   const browserSpeechSupported = useSyncExternalStore(subscribeToSpeechSupport, getSpeechSupportSnapshot, () => false);
   const speechSupported = isDesktop ? desktopDictationSupported : browserSpeechSupported;
@@ -489,24 +492,7 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
 
   const firstName = viewer.name.split(" ")[0] || viewer.email?.split("@")[0] || "there";
 
-  function stopListening(options?: { preserveDraft?: boolean }) {
-    keepDictationAliveRef.current = false;
-    suppressNextDictationCommitRef.current = options?.preserveDraft === false;
-
-    if (restartDictationTimerRef.current) {
-      window.clearTimeout(restartDictationTimerRef.current);
-      restartDictationTimerRef.current = null;
-    }
-
-    if (isDesktop) {
-      void window.electron?.dictation?.stop?.();
-      return;
-    }
-
-    recognitionRef.current?.stop();
-  }
-
-  function toggleListening() {
+  const startListening = useCallback((options?: { keepAlive?: boolean }) => {
     if (!speechSupported || isLoading) {
       if (!speechSupported) {
         setSpeechError("Voice dictation is not available in this environment.");
@@ -515,13 +501,7 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
     }
 
     setSpeechError(null);
-
-    if (isListening) {
-      stopListening({ preserveDraft: true });
-      return;
-    }
-
-    keepDictationAliveRef.current = isDesktop;
+    keepDictationAliveRef.current = isDesktop && Boolean(options?.keepAlive);
     suppressNextDictationCommitRef.current = false;
     activeDesktopSessionIdRef.current = null;
     dictationBaseRef.current = input;
@@ -538,7 +518,83 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
     } catch {
       setSpeechError("Voice dictation could not start cleanly. Try again.");
     }
+  }, [input, isDesktop, isLoading, speechSupported]);
+
+  const stopListening = useCallback((options?: { preserveDraft?: boolean }) => {
+    keepDictationAliveRef.current = false;
+    suppressNextDictationCommitRef.current = options?.preserveDraft === false;
+
+    if (restartDictationTimerRef.current) {
+      window.clearTimeout(restartDictationTimerRef.current);
+      restartDictationTimerRef.current = null;
+    }
+
+    if (isDesktop) {
+      void window.electron?.dictation?.stop?.();
+      return;
+    }
+
+    recognitionRef.current?.stop();
+  }, [isDesktop]);
+
+  function toggleListening() {
+    if (isListening) {
+      stopListening({ preserveDraft: true });
+      return;
+    }
+
+    startListening({ keepAlive: isDesktop });
   }
+
+  useEffect(() => {
+    if (!isDesktop) {
+      return;
+    }
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key !== PUSH_TO_TALK_KEY || event.repeat || pushToTalkActiveRef.current || isLoading || !speechSupported) {
+        return;
+      }
+
+      pushToTalkActiveRef.current = true;
+      event.preventDefault();
+      startListening({ keepAlive: true });
+    }
+
+    function handleKeyUp(event: KeyboardEvent) {
+      if (event.key !== PUSH_TO_TALK_KEY || !pushToTalkActiveRef.current) {
+        return;
+      }
+
+      pushToTalkActiveRef.current = false;
+      event.preventDefault();
+
+      if (isListening) {
+        stopListening({ preserveDraft: true });
+      }
+    }
+
+    function handleBlur() {
+      if (!pushToTalkActiveRef.current) {
+        return;
+      }
+
+      pushToTalkActiveRef.current = false;
+      if (isListening) {
+        stopListening({ preserveDraft: true });
+      }
+    }
+
+    window.addEventListener("keydown", handleKeyDown);
+    window.addEventListener("keyup", handleKeyUp);
+    window.addEventListener("blur", handleBlur);
+
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+      window.removeEventListener("keyup", handleKeyUp);
+      window.removeEventListener("blur", handleBlur);
+    };
+  }, [isDesktop, isListening, isLoading, speechSupported, startListening, stopListening]);
 
   async function handleSend() {
     if (!input.trim() || isLoading) {
@@ -759,7 +815,7 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
               : isListening
                 ? "Listening now. Verge is adding your words into the draft."
                 : speechSupported
-                  ? "Tap the mic to speak into the draft. Kai still plans around energy, buffers, and deadlines instead of treating the calendar like a wall of equal blocks."
+                  ? "Tap the mic or hold Option to speak into the draft. Kai still plans around energy, buffers, and deadlines instead of treating the calendar like a wall of equal blocks."
                   : "Kai plans around energy, buffers, and deadlines instead of treating the calendar like a wall of equal blocks."}
           </p>
         </footer>
