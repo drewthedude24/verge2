@@ -13,6 +13,7 @@ declare global {
 
   type VergeDictationEvent = {
     type: "start" | "transcript" | "error" | "end";
+    sessionId?: number | null;
     text?: string | null;
     code?: string | null;
     message?: string | null;

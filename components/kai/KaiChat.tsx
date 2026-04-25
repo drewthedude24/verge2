@@ -261,6 +261,7 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
   const dictationBaseRef = useRef("");
   const dictatedTextRef = useRef("");
   const dictationInterimRef = useRef("");
+  const activeDesktopSessionIdRef = useRef<number | null>(null);
   const keepDictationAliveRef = useRef(false);
   const suppressNextDictationCommitRef = useRef(false);
   const restartDictationTimerRef = useRef<number | null>(null);
@@ -330,6 +331,18 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
         return;
       }
 
+      const eventSessionId = typeof event.sessionId === "number" ? event.sessionId : null;
+
+      if (event.type === "start") {
+        activeDesktopSessionIdRef.current = eventSessionId;
+      } else if (
+        eventSessionId !== null &&
+        activeDesktopSessionIdRef.current !== null &&
+        eventSessionId !== activeDesktopSessionIdRef.current
+      ) {
+        return;
+      }
+
       if (event.type === "start") {
         clearDictationRestart();
         setSpeechError(null);
@@ -389,6 +402,7 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
           return;
         }
 
+        activeDesktopSessionIdRef.current = null;
         setIsListening(false);
       }
     });
@@ -509,6 +523,7 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
 
     keepDictationAliveRef.current = isDesktop;
     suppressNextDictationCommitRef.current = false;
+    activeDesktopSessionIdRef.current = null;
     dictationBaseRef.current = input;
     dictatedTextRef.current = "";
     dictationInterimRef.current = "";

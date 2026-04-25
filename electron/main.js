@@ -32,6 +32,7 @@ const dictationState = {
   compilerPromise: null,
   stopTimer: null,
   didEmitEnd: false,
+  sessionId: 0,
 };
 
 let mainWindow = null;
@@ -126,11 +127,14 @@ function emitWindowState() {
   emitToRenderer("window:state-changed", getWindowSnapshot());
 }
 
-function emitDictationEvent(event) {
+function emitDictationEvent(event, sessionId = dictationState.sessionId) {
   if (event?.type === "end") {
     dictationState.didEmitEnd = true;
   }
-  emitToRenderer("dictation:event", event);
+  emitToRenderer("dictation:event", {
+    ...event,
+    sessionId,
+  });
 }
 
 function rememberExpandedBounds() {
@@ -401,11 +405,13 @@ async function startNativeDictation(language) {
   stopNativeDictation();
   const binaryPath = await ensureMacDictationBinary();
   const locale = language || app.getLocale() || "en-US";
+  const sessionId = dictationState.sessionId + 1;
 
   const child = spawn(binaryPath, [locale], {
     stdio: ["pipe", "pipe", "pipe"],
   });
 
+  dictationState.sessionId = sessionId;
   dictationState.process = child;
   dictationState.didEmitEnd = false;
 
@@ -420,7 +426,7 @@ async function startNativeDictation(language) {
 
     try {
       const event = JSON.parse(line);
-      emitDictationEvent(event);
+      emitDictationEvent(event, sessionId);
     } catch (error) {
       console.error("[Dictation] Failed to parse helper output:", error, line);
     }
@@ -438,7 +444,7 @@ async function startNativeDictation(language) {
       emitDictationEvent({
         type: "end",
         signal,
-      });
+      }, sessionId);
     }
   });
 
@@ -448,7 +454,7 @@ async function startNativeDictation(language) {
       type: "error",
       code: "launch",
       message: error.message,
-    });
+    }, sessionId);
     cleanupDictationProcess(child);
   });
 
@@ -460,7 +466,13 @@ function wireIpc() {
   ipcMain.handle("window:minimize", () => setWindowMode(true));
   ipcMain.handle("window:restore", () => setWindowMode(false));
   ipcMain.handle("window:close", () => {
-    mainWindow?.close();
+    if (process.platform === "darwin" && app.dock) {
+      app.dock.hide();
+    }
+    app.quit();
+    setTimeout(() => {
+      app.exit(0);
+    }, 200);
   });
   ipcMain.handle("window:toggle-always-on-top", () => {
     windowState.alwaysOnTop = !windowState.alwaysOnTop;
