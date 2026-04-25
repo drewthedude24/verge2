@@ -773,6 +773,11 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
               disabled={isLoading}
               className="max-h-[160px] flex-1 resize-none bg-transparent text-sm leading-relaxed text-white/90 outline-none placeholder:text-white/25 disabled:opacity-40"
             />
+            {isDesktop && speechSupported ? (
+              <span className="mb-0.5 hidden rounded-xl border border-white/10 bg-white/[0.06] px-2.5 py-2 text-[10px] font-semibold uppercase tracking-[0.16em] text-white/55 md:inline-flex">
+                Hold Option
+              </span>
+            ) : null}
             <button
               onClick={toggleListening}
               disabled={isLoading || !speechSupported}
@@ -815,7 +820,7 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
               : isListening
                 ? "Listening now. Verge is adding your words into the draft."
                 : speechSupported
-                  ? "Tap the mic or hold Option to speak into the draft. Kai still plans around energy, buffers, and deadlines instead of treating the calendar like a wall of equal blocks."
+                  ? "Tap the mic, or hold Option to record and release to keep the text in the draft. Kai still plans around energy, buffers, and deadlines instead of treating the calendar like a wall of equal blocks."
                   : "Kai plans around energy, buffers, and deadlines instead of treating the calendar like a wall of equal blocks."}
           </p>
         </footer>

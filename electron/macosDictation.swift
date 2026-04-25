@@ -27,6 +27,45 @@ func emit(_ event: DictationEvent) {
     FileHandle.standardOutput.write(Data((line + "\n").utf8))
 }
 
+func mergeTranscriptSnapshots(previous: String, next: String) -> String {
+    let previous = previous.trimmingCharacters(in: .whitespacesAndNewlines)
+    let next = next.trimmingCharacters(in: .whitespacesAndNewlines)
+
+    if next.isEmpty {
+        return previous
+    }
+
+    if previous.isEmpty {
+        return next
+    }
+
+    if next == previous {
+        return previous
+    }
+
+    if next.hasPrefix(previous) {
+        return next
+    }
+
+    if previous.hasPrefix(next) || previous.localizedCaseInsensitiveContains(next) {
+        return previous
+    }
+
+    let maxOverlap = min(previous.count, next.count)
+    if maxOverlap > 0 {
+        for size in stride(from: maxOverlap, through: 1, by: -1) {
+            let previousTail = String(previous.suffix(size)).lowercased()
+            let nextHead = String(next.prefix(size)).lowercased()
+
+            if previousTail == nextHead {
+                return "\(previous) \(next.dropFirst(size))".trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+        }
+    }
+
+    return "\(previous) \(next)".trimmingCharacters(in: .whitespacesAndNewlines)
+}
+
 enum DictationFailure: LocalizedError {
     case speechUnavailable
     case speechDenied
@@ -73,6 +112,8 @@ final class DictationSession {
     private var recognitionTask: SFSpeechRecognitionTask?
     private var stopContinuation: CheckedContinuation<Void, Never>?
     private var stopped = false
+    private var committedTranscript = ""
+    private var previewTranscript = ""
 
     init(localeIdentifier: String) throws {
         let locale = Locale(identifier: localeIdentifier)
@@ -110,7 +151,15 @@ final class DictationSession {
 
             if let result {
                 let transcript = result.bestTranscription.formattedString.trimmingCharacters(in: .whitespacesAndNewlines)
-                emit(DictationEvent(type: "transcript", text: transcript, isFinal: result.isFinal))
+
+                if result.isFinal {
+                    self.committedTranscript = mergeTranscriptSnapshots(previous: self.committedTranscript, next: transcript)
+                    self.previewTranscript = self.committedTranscript
+                    emit(DictationEvent(type: "transcript", text: self.committedTranscript, isFinal: true))
+                } else {
+                    self.previewTranscript = mergeTranscriptSnapshots(previous: self.committedTranscript, next: transcript)
+                    emit(DictationEvent(type: "transcript", text: self.previewTranscript, isFinal: false))
+                }
             }
 
             if let error {
@@ -134,6 +183,11 @@ final class DictationSession {
         }
 
         stopped = true
+        let finalTranscript = mergeTranscriptSnapshots(previous: committedTranscript, next: previewTranscript)
+        if !finalTranscript.isEmpty && finalTranscript != committedTranscript {
+            committedTranscript = finalTranscript
+            emit(DictationEvent(type: "transcript", text: committedTranscript, isFinal: true))
+        }
         audioEngine.inputNode.removeTap(onBus: 0)
         audioEngine.stop()
         recognitionRequest.endAudio()
