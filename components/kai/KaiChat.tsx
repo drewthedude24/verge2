@@ -13,6 +13,7 @@ export interface ChatViewer {
 interface KaiChatProps {
   viewer: ChatViewer;
   mode: "live" | "preview";
+  liveModelLabel?: string | null;
   onSignOut?: () => void | Promise<void>;
 }
 
@@ -90,6 +91,43 @@ function mergeDraftText(base: string, finalTranscript: string, interimTranscript
 
   const separator = trimmedBase.endsWith("\n") ? "" : " ";
   return `${trimmedBase}${separator}${spoken}`;
+}
+
+function mergeTranscriptSnapshot(previousSnapshot: string, nextSnapshot: string) {
+  const previous = previousSnapshot.trim();
+  const next = nextSnapshot.trim();
+
+  if (!next) {
+    return previous;
+  }
+
+  if (!previous) {
+    return next;
+  }
+
+  if (next === previous) {
+    return previous;
+  }
+
+  if (next.startsWith(previous)) {
+    return next;
+  }
+
+  if (previous.startsWith(next) || previous.toLowerCase().includes(next.toLowerCase())) {
+    return previous;
+  }
+
+  const maxOverlap = Math.min(previous.length, next.length);
+  for (let size = maxOverlap; size > 0; size -= 1) {
+    const previousTail = previous.slice(-size).toLowerCase();
+    const nextHead = next.slice(0, size).toLowerCase();
+
+    if (previousTail === nextHead) {
+      return `${previous} ${next.slice(size)}`.trim();
+    }
+  }
+
+  return `${previous} ${next}`.trim();
 }
 
 function mapBrowserSpeechError(error: string) {
@@ -189,7 +227,7 @@ function MessageBubble({ message }: { message: Message }) {
   );
 }
 
-export default function KaiChat({ viewer, mode, onSignOut }: KaiChatProps) {
+export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: KaiChatProps) {
   const { messages, isLoading, sendMessage, resetConversation } = useKai();
   const [input, setInput] = useState("");
   const [hasStarted, setHasStarted] = useState(false);
@@ -245,7 +283,7 @@ export default function KaiChat({ viewer, mode, onSignOut }: KaiChatProps) {
       }
 
       if (event.type === "transcript") {
-        dictatedTextRef.current = event.text?.trim() || "";
+        dictatedTextRef.current = mergeTranscriptSnapshot(dictatedTextRef.current, event.text?.trim() || "");
         setInput(mergeDraftText(dictationBaseRef.current, "", dictatedTextRef.current));
         return;
       }
@@ -441,7 +479,7 @@ export default function KaiChat({ viewer, mode, onSignOut }: KaiChatProps) {
       subtitle={
         mode === "live"
           ? "Talk through the week and Kai will shape a schedule inside the desktop shell."
-          : "Gemini is not configured, so Kai uses a safe fallback instead of breaking."
+          : "A live model provider is not configured, so Kai uses a safe fallback instead of breaking."
       }
       contentClassName="grid min-h-0 flex-1 gap-0 lg:grid-cols-[minmax(0,1fr)_320px]"
       actions={
@@ -604,8 +642,8 @@ export default function KaiChat({ viewer, mode, onSignOut }: KaiChatProps) {
           title={mode === "live" ? "Live planner route" : "Preview route"}
           copy={
             mode === "live"
-              ? "Gemini-backed chat is enabled. If the provider fails, the route now falls back cleanly instead of crashing the UI."
-              : "This mode keeps the desktop app explorable even before Supabase or Gemini are wired in."
+              ? `${liveModelLabel || "A live model"} is enabled. If the provider fails, the route now falls back cleanly instead of crashing the UI.`
+              : "This mode keeps the desktop app explorable even before Supabase or a live model provider are wired in."
           }
         />
         <InfoCard

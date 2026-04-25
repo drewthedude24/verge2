@@ -6,9 +6,19 @@ import SignIn from "@/components/auth/SignIn";
 import KaiChat, { type ChatViewer } from "@/components/kai/KaiChat";
 import { createClient, isSupabaseConfigured } from "@/lib/supabase";
 
+type KaiStatus = {
+  liveModelConfigured: boolean | null;
+  provider: string | null;
+  model: string | null;
+};
+
 export default function RootPage() {
   const [user, setUser] = useState<User | null>(null);
-  const [liveModelConfigured, setLiveModelConfigured] = useState<boolean | null>(null);
+  const [kaiStatus, setKaiStatus] = useState<KaiStatus>({
+    liveModelConfigured: null,
+    provider: null,
+    model: null,
+  });
   const authConfigured = isSupabaseConfigured();
   const [authLoading, setAuthLoading] = useState(authConfigured);
   const supabase = createClient();
@@ -22,14 +32,26 @@ export default function RootPage() {
           throw new Error("Failed to load Kai status");
         }
 
-        const payload = (await response.json()) as { liveModelConfigured?: boolean };
+        const payload = (await response.json()) as {
+          liveModelConfigured?: boolean;
+          provider?: string | null;
+          model?: string | null;
+        };
         if (!cancelled) {
-          setLiveModelConfigured(Boolean(payload.liveModelConfigured));
+          setKaiStatus({
+            liveModelConfigured: Boolean(payload.liveModelConfigured),
+            provider: payload.provider ?? null,
+            model: payload.model ?? null,
+          });
         }
       })
       .catch(() => {
         if (!cancelled) {
-          setLiveModelConfigured(false);
+          setKaiStatus({
+            liveModelConfigured: false,
+            provider: null,
+            model: null,
+          });
         }
       });
 
@@ -96,8 +118,11 @@ export default function RootPage() {
     await supabase?.auth.signOut();
   }
 
-  const loading = (authConfigured && authLoading) || liveModelConfigured === null;
-  const mode = liveModelConfigured ? "live" : "preview";
+  const loading = (authConfigured && authLoading) || kaiStatus.liveModelConfigured === null;
+  const mode = kaiStatus.liveModelConfigured ? "live" : "preview";
+  const liveModelLabel = kaiStatus.liveModelConfigured
+    ? [kaiStatus.provider, kaiStatus.model].filter(Boolean).join(" • ")
+    : null;
 
   if (loading) {
     return (
@@ -117,6 +142,7 @@ export default function RootPage() {
   return (
     <KaiChat
       viewer={viewer}
+      liveModelLabel={liveModelLabel}
       onSignOut={user ? handleSignOut : undefined}
       mode={mode}
     />
