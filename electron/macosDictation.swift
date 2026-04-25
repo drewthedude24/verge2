@@ -107,13 +107,15 @@ enum DictationFailure: LocalizedError {
 @MainActor
 final class DictationSession {
     private let audioEngine = AVAudioEngine()
-    private let recognitionRequest = SFSpeechAudioBufferRecognitionRequest()
     private let recognizer: SFSpeechRecognizer
+    private var recognitionRequest: SFSpeechAudioBufferRecognitionRequest?
     private var recognitionTask: SFSpeechRecognitionTask?
     private var stopContinuation: CheckedContinuation<Void, Never>?
+    private var restartWorkItem: DispatchWorkItem?
     private var stopped = false
     private var committedTranscript = ""
     private var previewTranscript = ""
+    private var cycleID = UUID()
 
     init(localeIdentifier: String) throws {
         let locale = Locale(identifier: localeIdentifier)
@@ -131,44 +133,77 @@ final class DictationSession {
             throw DictationFailure.speechUnavailable
         }
 
-        recognitionRequest.shouldReportPartialResults = true
-        if recognizer.supportsOnDeviceRecognition {
-            recognitionRequest.requiresOnDeviceRecognition = true
-        }
-
         let inputNode = audioEngine.inputNode
         let recordingFormat = inputNode.outputFormat(forBus: 0)
         inputNode.removeTap(onBus: 0)
         inputNode.installTap(onBus: 0, bufferSize: 1024, format: recordingFormat) { [weak self] buffer, _ in
-            self?.recognitionRequest.append(buffer)
+            self?.recognitionRequest?.append(buffer)
         }
 
         audioEngine.prepare()
         try audioEngine.start()
+        beginRecognitionCycle()
+        emit(DictationEvent(type: "start"))
+    }
 
-        recognitionTask = recognizer.recognitionTask(with: recognitionRequest) { [weak self] result, error in
-            guard let self else { return }
+    private func beginRecognitionCycle(after delay: TimeInterval = 0) {
+        guard !stopped else {
+            return
+        }
 
-            if let result {
-                let transcript = result.bestTranscription.formattedString.trimmingCharacters(in: .whitespacesAndNewlines)
+        restartWorkItem?.cancel()
+        let nextCycleID = UUID()
+        cycleID = nextCycleID
 
-                if result.isFinal {
-                    self.committedTranscript = mergeTranscriptSnapshots(previous: self.committedTranscript, next: transcript)
-                    self.previewTranscript = self.committedTranscript
-                    emit(DictationEvent(type: "transcript", text: self.committedTranscript, isFinal: true))
-                } else {
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self, !self.stopped else {
+                return
+            }
+
+            guard self.recognizer.isAvailable else {
+                self.beginRecognitionCycle(after: 0.35)
+                return
+            }
+
+            self.recognitionTask?.cancel()
+            self.recognitionTask = nil
+            self.recognitionRequest?.endAudio()
+
+            let request = SFSpeechAudioBufferRecognitionRequest()
+            request.shouldReportPartialResults = true
+            if self.recognizer.supportsOnDeviceRecognition {
+                request.requiresOnDeviceRecognition = true
+            }
+            self.recognitionRequest = request
+
+            self.recognitionTask = self.recognizer.recognitionTask(with: request) { [weak self] result, error in
+                guard let self, !self.stopped, self.cycleID == nextCycleID else {
+                    return
+                }
+
+                if let result {
+                    let transcript = result.bestTranscription.formattedString.trimmingCharacters(in: .whitespacesAndNewlines)
+
+                    if result.isFinal {
+                        self.committedTranscript = mergeTranscriptSnapshots(previous: self.committedTranscript, next: transcript)
+                        self.previewTranscript = self.committedTranscript
+                        emit(DictationEvent(type: "transcript", text: self.committedTranscript, isFinal: true))
+                        self.beginRecognitionCycle(after: 0.06)
+                        return
+                    }
+
                     self.previewTranscript = mergeTranscriptSnapshots(previous: self.committedTranscript, next: transcript)
                     emit(DictationEvent(type: "transcript", text: self.previewTranscript, isFinal: false))
                 }
-            }
 
-            if let error {
-                emit(DictationEvent(type: "error", code: "speech-runtime", message: error.localizedDescription))
-                self.stop()
+                if let _ = error {
+                    self.beginRecognitionCycle(after: 0.12)
+                }
             }
         }
 
-        emit(DictationEvent(type: "start"))
+        restartWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: workItem)
     }
 
     func waitForStop() async {
@@ -183,6 +218,8 @@ final class DictationSession {
         }
 
         stopped = true
+        restartWorkItem?.cancel()
+        restartWorkItem = nil
         let finalTranscript = mergeTranscriptSnapshots(previous: committedTranscript, next: previewTranscript)
         if !finalTranscript.isEmpty && finalTranscript != committedTranscript {
             committedTranscript = finalTranscript
@@ -190,7 +227,8 @@ final class DictationSession {
         }
         audioEngine.inputNode.removeTap(onBus: 0)
         audioEngine.stop()
-        recognitionRequest.endAudio()
+        recognitionRequest?.endAudio()
+        recognitionRequest = nil
         recognitionTask?.cancel()
         recognitionTask = nil
         emit(DictationEvent(type: "end"))
