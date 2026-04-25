@@ -95,6 +95,7 @@ export default function RootPage() {
   const viewer = useMemo<ChatViewer>(() => {
     if (!user) {
       return {
+        id: null,
         name: "Guest",
         email: null,
         isGuest: true,
@@ -108,6 +109,7 @@ export default function RootPage() {
       "Verge";
 
     return {
+      id: user.id,
       name: displayName,
       email: user.email ?? null,
       isGuest: false,

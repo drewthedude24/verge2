@@ -1,10 +1,14 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import ExecutionRail from "@/components/kai/ExecutionRail";
 import DesktopShell from "@/components/layout/DesktopShell";
+import { buildLocalExecutionPlan, saveExecutionPlan, updateExecutionBlockStatus } from "@/lib/plan-store";
+import { createClient, isSupabaseConfigured } from "@/lib/supabase";
 import { type Message, useKai } from "@/components/kai/use-kai";
 
 export interface ChatViewer {
+  id: string | null;
   name: string;
   email: string | null;
   isGuest: boolean;
@@ -80,21 +84,6 @@ function MicIcon({ active = false }: { active?: boolean }) {
   );
 }
 
-function mergeDraftText(base: string, finalTranscript: string, interimTranscript = "") {
-  const spoken = `${finalTranscript}${interimTranscript}`.trim();
-  if (!spoken) {
-    return base;
-  }
-
-  const trimmedBase = base.trimEnd();
-  if (!trimmedBase) {
-    return spoken;
-  }
-
-  const separator = trimmedBase.endsWith("\n") ? "" : " ";
-  return `${trimmedBase}${separator}${spoken}`;
-}
-
 function mergeTranscriptSnapshot(previousSnapshot: string, nextSnapshot: string) {
   const previous = previousSnapshot.trim();
   const next = nextSnapshot.trim();
@@ -132,23 +121,42 @@ function mergeTranscriptSnapshot(previousSnapshot: string, nextSnapshot: string)
   return `${previous} ${next}`.trim();
 }
 
-function buildTranscriptPreview(committedTranscript: string, interimTranscript: string) {
-  const committed = committedTranscript.trim();
-  const interim = interimTranscript.trim();
+function extractTranscriptDelta(previousSnapshot: string, nextSnapshot: string) {
+  const previous = previousSnapshot.trim();
+  const merged = mergeTranscriptSnapshot(previousSnapshot, nextSnapshot).trim();
 
-  if (!interim) {
-    return committed;
+  if (!merged) {
+    return "";
   }
 
-  if (!committed) {
-    return interim;
+  if (!previous) {
+    return merged;
   }
 
-  if (interim.startsWith(committed)) {
-    return interim;
+  if (merged === previous) {
+    return "";
   }
 
-  return mergeTranscriptSnapshot(committed, interim);
+  if (merged.startsWith(previous)) {
+    return merged.slice(previous.length).trim();
+  }
+
+  return nextSnapshot.trim();
+}
+
+function appendDraftSegment(draft: string, segment: string) {
+  const nextSegment = segment.trim();
+  if (!nextSegment) {
+    return draft;
+  }
+
+  const trimmedDraft = draft.trimEnd();
+  if (!trimmedDraft) {
+    return nextSegment;
+  }
+
+  const separator = trimmedDraft.endsWith("\n") ? "" : " ";
+  return `${trimmedDraft}${separator}${nextSegment}`;
 }
 
 function mapBrowserSpeechError(error: string) {
@@ -251,26 +259,67 @@ function MessageBubble({ message }: { message: Message }) {
 }
 
 export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: KaiChatProps) {
-  const { messages, isLoading, sendMessage, resetConversation } = useKai();
+  const { messages, isLoading, latestProfile, sendMessage, resetConversation } = useKai();
+  const supabase = createClient();
+  const authConfigured = isSupabaseConfigured();
   const [input, setInput] = useState("");
   const [hasStarted, setHasStarted] = useState(false);
   const [isListening, setIsListening] = useState(false);
   const [speechError, setSpeechError] = useState<string | null>(null);
   const [desktopDictationSupported, setDesktopDictationSupported] = useState(false);
+  const [planStatusOverrides, setPlanStatusOverrides] = useState<Record<string, "pending" | "completed" | "skipped">>(
+    {},
+  );
+  const [persistedPlanKey, setPersistedPlanKey] = useState<string | null>(null);
+  const [persistErrorPlanKey, setPersistErrorPlanKey] = useState<string | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const recognitionRef = useRef<SpeechRecognition | null>(null);
-  const dictationBaseRef = useRef("");
-  const dictatedTextRef = useRef("");
-  const dictationInterimRef = useRef("");
+  const latestDesktopTranscriptRef = useRef("");
   const activeDesktopSessionIdRef = useRef<number | null>(null);
   const keepDictationAliveRef = useRef(false);
-  const suppressNextDictationCommitRef = useRef(false);
+  const discardDictationOutputRef = useRef(false);
   const restartDictationTimerRef = useRef<number | null>(null);
   const pushToTalkActiveRef = useRef(false);
+  const persistedRunRef = useRef<{ planKey: string; runId: string } | null>(null);
+  const persistRequestPlanKeyRef = useRef<string | null>(null);
+  const lastUserPromptRef = useRef("");
   const isDesktop = useSyncExternalStore(subscribeToDesktopBridge, getDesktopSnapshot, () => false);
   const browserSpeechSupported = useSyncExternalStore(subscribeToSpeechSupport, getSpeechSupportSnapshot, () => false);
   const speechSupported = isDesktop ? desktopDictationSupported : browserSpeechSupported;
+  const generatedPlan = useMemo(() => buildLocalExecutionPlan(latestProfile), [latestProfile]);
+  const executionPlan = useMemo(() => {
+    if (!generatedPlan) {
+      return null;
+    }
+
+    return {
+      ...generatedPlan,
+      blocks: generatedPlan.blocks.map((block) => ({
+        ...block,
+        status: planStatusOverrides[`${generatedPlan.plan_id}:${block.id}`] ?? block.status,
+      })),
+    };
+  }, [generatedPlan, planStatusOverrides]);
+  const storageState = useMemo(() => {
+    if (!authConfigured) {
+      return "disabled" as const;
+    }
+
+    if (!generatedPlan || !supabase || !viewer.id) {
+      return "local" as const;
+    }
+
+    if (persistErrorPlanKey === generatedPlan.plan_id) {
+      return "error" as const;
+    }
+
+    if (persistedPlanKey === generatedPlan.plan_id) {
+      return "saved" as const;
+    }
+
+    return "saving" as const;
+  }, [authConfigured, generatedPlan, persistErrorPlanKey, persistedPlanKey, supabase, viewer.id]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -350,27 +399,25 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
         clearDictationRestart();
         setSpeechError(null);
         setIsListening(true);
+        discardDictationOutputRef.current = false;
         return;
       }
 
       if (event.type === "transcript") {
-        const nextTranscript = event.text?.trim() || "";
-
-        if (event.isFinal) {
-          dictatedTextRef.current = mergeTranscriptSnapshot(dictatedTextRef.current, nextTranscript);
-          dictationInterimRef.current = "";
-          setInput(mergeDraftText(dictationBaseRef.current, "", dictatedTextRef.current));
+        if (discardDictationOutputRef.current || !event.isFinal) {
           return;
         }
 
-        dictationInterimRef.current = nextTranscript;
-        setInput(
-          mergeDraftText(
-            dictationBaseRef.current,
-            "",
-            buildTranscriptPreview(dictatedTextRef.current, dictationInterimRef.current),
-          ),
-        );
+        const nextTranscript = event.text?.trim() || "";
+        const mergedSnapshot = mergeTranscriptSnapshot(latestDesktopTranscriptRef.current, nextTranscript);
+        const delta = extractTranscriptDelta(latestDesktopTranscriptRef.current, mergedSnapshot);
+        latestDesktopTranscriptRef.current = mergedSnapshot;
+
+        if (!delta) {
+          return;
+        }
+
+        setInput((currentDraft) => appendDraftSegment(currentDraft, delta));
         return;
       }
 
@@ -385,19 +432,8 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
       }
 
       if (event.type === "end") {
-        dictatedTextRef.current = mergeTranscriptSnapshot(dictatedTextRef.current, dictationInterimRef.current);
-        const finalDraft = mergeDraftText(dictationBaseRef.current, "", dictatedTextRef.current);
-        const shouldSuppressCommit = suppressNextDictationCommitRef.current;
-        suppressNextDictationCommitRef.current = false;
-        const shouldAutoRestart = keepDictationAliveRef.current && !shouldSuppressCommit;
-
-        if (!shouldSuppressCommit) {
-          setInput(finalDraft);
-          dictationBaseRef.current = finalDraft;
-        }
-
-        dictatedTextRef.current = "";
-        dictationInterimRef.current = "";
+        const shouldAutoRestart = keepDictationAliveRef.current && !discardDictationOutputRef.current;
+        latestDesktopTranscriptRef.current = "";
 
         if (shouldAutoRestart) {
           setIsListening(true);
@@ -406,6 +442,7 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
         }
 
         activeDesktopSessionIdRef.current = null;
+        discardDictationOutputRef.current = false;
         setIsListening(false);
       }
     });
@@ -441,7 +478,6 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
 
     recognition.onresult = (event) => {
       let finalTranscript = "";
-      let interimTranscript = "";
 
       for (let index = event.resultIndex; index < event.results.length; index += 1) {
         const result = event.results[index];
@@ -449,14 +485,14 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
 
         if (result.isFinal) {
           finalTranscript += transcript;
-        } else {
-          interimTranscript += transcript;
         }
       }
 
-      dictatedTextRef.current = `${dictatedTextRef.current}${finalTranscript}`.trim();
-      const sessionTranscript = `${dictatedTextRef.current} ${interimTranscript}`.trim();
-      setInput(mergeDraftText(dictationBaseRef.current, "", sessionTranscript));
+      if (discardDictationOutputRef.current || !finalTranscript.trim()) {
+        return;
+      }
+
+      setInput((currentDraft) => appendDraftSegment(currentDraft, finalTranscript));
     };
 
     recognition.onerror = (event) => {
@@ -466,16 +502,7 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
 
     recognition.onend = () => {
       setIsListening(false);
-      const finalDraft = mergeDraftText(dictationBaseRef.current, "", dictatedTextRef.current);
-      const shouldSuppressCommit = suppressNextDictationCommitRef.current;
-      suppressNextDictationCommitRef.current = false;
-
-      if (!shouldSuppressCommit) {
-        setInput(finalDraft);
-        dictationBaseRef.current = finalDraft;
-      }
-
-      dictatedTextRef.current = "";
+      discardDictationOutputRef.current = false;
     };
 
     recognitionRef.current = recognition;
@@ -502,11 +529,9 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
 
     setSpeechError(null);
     keepDictationAliveRef.current = isDesktop && Boolean(options?.keepAlive);
-    suppressNextDictationCommitRef.current = false;
+    discardDictationOutputRef.current = false;
     activeDesktopSessionIdRef.current = null;
-    dictationBaseRef.current = input;
-    dictatedTextRef.current = "";
-    dictationInterimRef.current = "";
+    latestDesktopTranscriptRef.current = "";
 
     if (isDesktop) {
       void window.electron?.dictation?.start?.({ language: navigator.language || "en-US" });
@@ -518,11 +543,11 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
     } catch {
       setSpeechError("Voice dictation could not start cleanly. Try again.");
     }
-  }, [input, isDesktop, isLoading, speechSupported]);
+  }, [isDesktop, isLoading, speechSupported]);
 
   const stopListening = useCallback((options?: { preserveDraft?: boolean }) => {
     keepDictationAliveRef.current = false;
-    suppressNextDictationCommitRef.current = options?.preserveDraft === false;
+    discardDictationOutputRef.current = options?.preserveDraft === false;
 
     if (restartDictationTimerRef.current) {
       window.clearTimeout(restartDictationTimerRef.current);
@@ -596,6 +621,80 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
     };
   }, [isDesktop, isListening, isLoading, speechSupported, startListening, stopListening]);
 
+  useEffect(() => {
+    if (!generatedPlan || !latestProfile || !supabase || !viewer.id) {
+      return;
+    }
+
+    if (
+      persistedPlanKey === generatedPlan.plan_id ||
+      persistErrorPlanKey === generatedPlan.plan_id ||
+      persistRequestPlanKeyRef.current === generatedPlan.plan_id
+    ) {
+      return;
+    }
+
+    let cancelled = false;
+    persistRequestPlanKeyRef.current = generatedPlan.plan_id;
+    void saveExecutionPlan({
+      supabase,
+      userId: viewer.id,
+      providerLabel: liveModelLabel,
+      profile: latestProfile,
+      sourcePrompt: lastUserPromptRef.current,
+    })
+      .then(({ runId }) => {
+        if (cancelled) {
+          return;
+        }
+
+        persistedRunRef.current = {
+          planKey: generatedPlan.plan_id,
+          runId,
+        };
+        setPersistedPlanKey(generatedPlan.plan_id);
+        setPersistErrorPlanKey((currentValue) => (currentValue === generatedPlan.plan_id ? null : currentValue));
+      })
+      .catch((error) => {
+        console.error("[Verge] Failed to save execution plan:", error);
+        if (!cancelled) {
+          setPersistErrorPlanKey(generatedPlan.plan_id);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [generatedPlan, latestProfile, liveModelLabel, persistErrorPlanKey, persistedPlanKey, supabase, viewer.id]);
+
+  const handleUpdateBlockStatus = useCallback(
+    (blockId: string, status: "pending" | "completed" | "skipped") => {
+      if (!generatedPlan) {
+        return;
+      }
+
+      setPlanStatusOverrides((currentOverrides) => ({
+        ...currentOverrides,
+        [`${generatedPlan.plan_id}:${blockId}`]: status,
+      }));
+
+      if (!supabase || !persistedRunRef.current || persistedRunRef.current.planKey !== generatedPlan.plan_id) {
+        return;
+      }
+
+      void updateExecutionBlockStatus({
+        supabase,
+        runId: persistedRunRef.current.runId,
+        blockId,
+        status,
+      }).catch((error) => {
+        console.error("[Verge] Failed to update execution block:", error);
+        setPersistErrorPlanKey(generatedPlan.plan_id);
+      });
+    },
+    [generatedPlan, supabase],
+  );
+
   async function handleSend() {
     if (!input.trim() || isLoading) {
       return;
@@ -606,12 +705,11 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
     }
 
     const text = input.trim();
+    lastUserPromptRef.current = text;
     setInput("");
     setHasStarted(true);
     setSpeechError(null);
-    dictationBaseRef.current = "";
-    dictatedTextRef.current = "";
-    dictationInterimRef.current = "";
+    latestDesktopTranscriptRef.current = "";
     await sendMessage(text);
   }
 
@@ -620,6 +718,7 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
       stopListening({ preserveDraft: false });
     }
 
+    lastUserPromptRef.current = text;
     setHasStarted(true);
     setSpeechError(null);
     await sendMessage(text);
@@ -634,9 +733,13 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
     setHasStarted(false);
     setInput("");
     setSpeechError(null);
-    dictatedTextRef.current = "";
-    dictationInterimRef.current = "";
-    dictationBaseRef.current = "";
+    latestDesktopTranscriptRef.current = "";
+    persistedRunRef.current = null;
+    lastUserPromptRef.current = "";
+    persistRequestPlanKeyRef.current = null;
+    setPersistedPlanKey(null);
+    setPersistErrorPlanKey(null);
+    setPlanStatusOverrides({});
   }
 
   function handleKeyDown(event: React.KeyboardEvent<HTMLTextAreaElement>) {
@@ -652,7 +755,6 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
     }
 
     setInput(event.target.value);
-    dictationBaseRef.current = event.target.value;
     setSpeechError(null);
   }
 
@@ -665,7 +767,7 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
           ? "Talk through the week and Kai will shape a schedule inside the desktop shell."
           : "A live model provider is not configured, so Kai uses a safe fallback instead of breaking."
       }
-      contentClassName="grid min-h-0 flex-1 gap-0 lg:grid-cols-[minmax(0,1fr)_320px]"
+      contentClassName="grid min-h-0 flex-1 gap-0 lg:grid-cols-[minmax(0,1fr)_300px] xl:grid-cols-[minmax(0,1fr)_340px]"
       actions={
         <>
           {hasStarted ? (
@@ -818,7 +920,7 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
             {speechError
               ? speechError
               : isListening
-                ? "Listening now. Verge is adding your words into the draft."
+                ? "Listening now. Verge only appends committed speech to the draft, so pauses should not wipe earlier text."
                 : speechSupported
                   ? "Tap the mic, or hold Option to record and release to keep the text in the draft. Kai still plans around energy, buffers, and deadlines instead of treating the calendar like a wall of equal blocks."
                   : "Kai plans around energy, buffers, and deadlines instead of treating the calendar like a wall of equal blocks."}
@@ -826,48 +928,13 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
         </footer>
       </section>
 
-      <aside className="flex flex-col gap-4 border-t border-white/8 p-4 lg:border-t-0 lg:p-5">
-        <InfoCard
-          title={mode === "live" ? "Live planner route" : "Preview route"}
-          copy={
-            mode === "live"
-              ? `${liveModelLabel || "A live model"} is enabled. If the provider fails, the route now falls back cleanly instead of crashing the UI.`
-              : "This mode keeps the desktop app explorable even before Supabase or a live model provider are wired in."
-          }
-        />
-        <InfoCard
-          title="What Kai collects"
-          copy="Fixed commitments, deadlines, sleep rhythm, best focus window, and the things you refuse to sacrifice."
-        />
-        <InfoCard
-          title="Desktop shell"
-          copy="Frameless window, glass surface, and window controls are now managed in the Electron layer instead of being hardcoded browser assumptions."
-        />
-        <div className="rounded-[24px] border border-white/10 bg-white/[0.04] p-4">
-          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-white/35">Starter prompts</p>
-          <div className="mt-4 flex flex-wrap gap-2">
-            {STARTERS.slice(0, 3).map((starter) => (
-              <button
-                key={starter}
-                onClick={() => void handleStarter(starter)}
-                className="rounded-full border border-white/10 bg-white/[0.05] px-3 py-2 text-xs text-white/65 transition hover:border-white/20 hover:bg-white/10 hover:text-white"
-                type="button"
-              >
-                {starter}
-              </button>
-            ))}
-          </div>
-        </div>
-      </aside>
+      <ExecutionRail
+        liveModelLabel={liveModelLabel}
+        plan={executionPlan}
+        profile={latestProfile}
+        storageState={storageState}
+        onUpdateBlockStatus={handleUpdateBlockStatus}
+      />
     </DesktopShell>
-  );
-}
-
-function InfoCard({ title, copy }: { title: string; copy: string }) {
-  return (
-    <article className="rounded-[24px] border border-white/10 bg-white/[0.04] p-4">
-      <strong className="text-sm text-white">{title}</strong>
-      <p className="mt-2 text-sm leading-6 text-white/55">{copy}</p>
-    </article>
   );
 }

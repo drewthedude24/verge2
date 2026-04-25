@@ -176,6 +176,8 @@ SECTION 6: STRUCTURED DATA OUTPUT
 
 When generating a schedule OR wrapping up a session, append this block at the END of your message only. Never mid-conversation.
 Finish the natural-language answer completely before starting the block. Never begin the block mid-sentence.
+If you wrote a concrete schedule in natural language, the execution_plan must mirror it exactly with chronological blocks and matching times.
+If you only asked a follow-up question and did not create a real schedule yet, set execution_plan to null.
 
 ---DATA_OUTPUT_START---
 {
@@ -217,6 +219,30 @@ Finish the natural-language answer completely before starting the block. Never b
     "data_completeness": "partial | sufficient | complete",
     "scheduling_principles_applied": []
   },
+  "execution_plan": {
+    "plan_id": "",
+    "scope_label": "",
+    "status": "draft | ready",
+    "timezone": null,
+    "focus_strategy": "",
+    "blocks": [
+      {
+        "id": "",
+        "title": "",
+        "kind": "task | break | buffer | fixed | meal | workout | recovery | commute",
+        "date_label": "",
+        "start_time": "HH:MM",
+        "end_time": "HH:MM",
+        "duration_minutes": 0,
+        "status": "pending",
+        "focus_level": "deep | light | recovery | fixed",
+        "energy_match": "peak | steady | low | unknown",
+        "can_skip": true,
+        "source_goal": null,
+        "notes": null
+      }
+    ]
+  },
   "summary": ""
 }
 ---DATA_OUTPUT_END---
@@ -226,6 +252,13 @@ FIELD NOTES:
 - schedule_conflicts_detected: e.g. "insufficient sleep if work runs past 11pm", "study hours below 2:1 ratio"
 - scheduling_principles_applied: e.g. "ultradian_90min_blocks", "backward_deadline_planning", "buffer_zones", "task_batching"
 - recommended_study_hours_per_week = class_hours_per_week × 2
+- execution_plan should be null if you have not produced a concrete schedule yet
+- execution_plan.plan_id should be a short stable id like "today_plan_1" or "week_plan_1"
+- execution_plan.scope_label should match the plan window, e.g. "Today", "Tonight", "Monday", or "This week"
+- execution_plan.status = "ready" only when the schedule is concrete enough to follow now
+- execution_plan.blocks must be in chronological order
+- Use "task" for actionable work, "break" or "recovery" for rest, "buffer" for transitions, and "fixed" for immovable commitments
+- Keep block.status as "pending" in model output — the app will update completion state later
 - Leave unknowns as null or [] — never fabricate
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -309,6 +342,31 @@ export interface KaiDeadline {
   urgency: "low" | "medium" | "high";
 }
 
+export interface KaiExecutionBlock {
+  id: string;
+  title: string;
+  kind: "task" | "break" | "buffer" | "fixed" | "meal" | "workout" | "recovery" | "commute";
+  date_label: string;
+  start_time: string;
+  end_time: string;
+  duration_minutes: number;
+  status: "pending" | "completed" | "skipped";
+  focus_level: "deep" | "light" | "recovery" | "fixed";
+  energy_match: "peak" | "steady" | "low" | "unknown";
+  can_skip: boolean;
+  source_goal: string | null;
+  notes: string | null;
+}
+
+export interface KaiExecutionPlan {
+  plan_id: string;
+  scope_label: string;
+  status: "draft" | "ready";
+  timezone: string | null;
+  focus_strategy: string;
+  blocks: KaiExecutionBlock[];
+}
+
 export interface KaiUserProfile {
   user_profile: {
     name: string | null;
@@ -334,5 +392,6 @@ export interface KaiUserProfile {
     data_completeness: "partial" | "sufficient" | "complete";
     scheduling_principles_applied: string[];
   };
+  execution_plan: KaiExecutionPlan | null;
   summary: string;
 }

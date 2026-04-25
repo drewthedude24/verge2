@@ -1,6 +1,6 @@
 import { createClient as createSupabaseClient } from "@supabase/supabase-js";
 
-type BrowserSupabaseClient = ReturnType<typeof createSupabaseClient>;
+export type BrowserSupabaseClient = ReturnType<typeof createSupabaseClient>;
 
 let browserClient: BrowserSupabaseClient | null = null;
 
