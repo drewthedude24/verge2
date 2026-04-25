@@ -193,7 +193,7 @@ async function generateGeminiReply(contents: GeminiContent[]) {
         contents,
         generationConfig: {
           temperature: 0.7,
-          maxOutputTokens: 900,
+          maxOutputTokens: 2200,
         },
       }),
     },

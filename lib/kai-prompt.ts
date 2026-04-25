@@ -149,13 +149,18 @@ PERSONAL PRIORITY PROTECTION:
 
 SCHEDULE OUTPUT FORMAT (plain text before the JSON block):
 
-MONDAY
+Match the scope the user asked for.
+- If they asked for today, tonight, this afternoon, or tomorrow: output only that window.
+- If they asked for a few specific days: output only those days.
+- Only output all 7 days when they explicitly ask for a full weekly schedule.
+
+DAY / WINDOW
   09:00 – 10:30 | [Task] (90-min focus block)
   10:30 – 10:50 | Break
   10:50 – 12:00 | [Class name]
   ...
 
-[Repeat for all 7 days. Days with nothing: "No commitments — free day."]
+For a full-week schedule, days with nothing can say: "No commitments — free day."
 
 Add a 2–3 sentence note explaining 1–2 key decisions made.
 
@@ -164,6 +169,7 @@ SECTION 6: STRUCTURED DATA OUTPUT
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 When generating a schedule OR wrapping up a session, append this block at the END of your message only. Never mid-conversation.
+Finish the natural-language answer completely before starting the block. Never begin the block mid-sentence.
 
 ---DATA_OUTPUT_START---
 {
@@ -263,9 +269,12 @@ export function parseKaiResponse(raw: string): {
   structuredData: KaiUserProfile | null;
 } {
   const match = raw.match(/---DATA_OUTPUT_START---([\s\S]*?)---DATA_OUTPUT_END---/);
-  const conversationText = raw
-    .replace(/---DATA_OUTPUT_START---[\s\S]*?---DATA_OUTPUT_END---/, "")
-    .trim();
+  const partialMarkerIndex = raw.indexOf("---DATA_OUTPUT_START---");
+  const conversationText = match
+    ? raw.replace(/---DATA_OUTPUT_START---[\s\S]*?---DATA_OUTPUT_END---/, "").trim()
+    : partialMarkerIndex >= 0
+      ? raw.slice(0, partialMarkerIndex).trim()
+      : raw.trim();
 
   let structuredData: KaiUserProfile | null = null;
   if (match) {
