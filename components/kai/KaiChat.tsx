@@ -130,6 +130,25 @@ function mergeTranscriptSnapshot(previousSnapshot: string, nextSnapshot: string)
   return `${previous} ${next}`.trim();
 }
 
+function buildTranscriptPreview(committedTranscript: string, interimTranscript: string) {
+  const committed = committedTranscript.trim();
+  const interim = interimTranscript.trim();
+
+  if (!interim) {
+    return committed;
+  }
+
+  if (!committed) {
+    return interim;
+  }
+
+  if (interim.startsWith(committed)) {
+    return interim;
+  }
+
+  return mergeTranscriptSnapshot(committed, interim);
+}
+
 function mapBrowserSpeechError(error: string) {
   switch (error) {
     case "not-allowed":
@@ -239,6 +258,7 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
   const recognitionRef = useRef<SpeechRecognition | null>(null);
   const dictationBaseRef = useRef("");
   const dictatedTextRef = useRef("");
+  const dictationInterimRef = useRef("");
   const isDesktop = useSyncExternalStore(subscribeToDesktopBridge, getDesktopSnapshot, () => false);
   const browserSpeechSupported = useSyncExternalStore(subscribeToSpeechSupport, getSpeechSupportSnapshot, () => false);
   const speechSupported = isDesktop ? desktopDictationSupported : browserSpeechSupported;
@@ -277,14 +297,30 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
 
       if (event.type === "start") {
         dictatedTextRef.current = "";
+        dictationInterimRef.current = "";
         setSpeechError(null);
         setIsListening(true);
         return;
       }
 
       if (event.type === "transcript") {
-        dictatedTextRef.current = mergeTranscriptSnapshot(dictatedTextRef.current, event.text?.trim() || "");
-        setInput(mergeDraftText(dictationBaseRef.current, "", dictatedTextRef.current));
+        const nextTranscript = event.text?.trim() || "";
+
+        if (event.isFinal) {
+          dictatedTextRef.current = mergeTranscriptSnapshot(dictatedTextRef.current, nextTranscript);
+          dictationInterimRef.current = "";
+          setInput(mergeDraftText(dictationBaseRef.current, "", dictatedTextRef.current));
+          return;
+        }
+
+        dictationInterimRef.current = nextTranscript;
+        setInput(
+          mergeDraftText(
+            dictationBaseRef.current,
+            "",
+            buildTranscriptPreview(dictatedTextRef.current, dictationInterimRef.current),
+          ),
+        );
         return;
       }
 
@@ -296,10 +332,12 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
 
       if (event.type === "end") {
         setIsListening(false);
+        dictatedTextRef.current = mergeTranscriptSnapshot(dictatedTextRef.current, dictationInterimRef.current);
         const finalDraft = mergeDraftText(dictationBaseRef.current, "", dictatedTextRef.current);
         setInput(finalDraft);
         dictationBaseRef.current = finalDraft;
         dictatedTextRef.current = "";
+        dictationInterimRef.current = "";
       }
     });
 
@@ -404,6 +442,7 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
 
     dictationBaseRef.current = input;
     dictatedTextRef.current = "";
+    dictationInterimRef.current = "";
 
     if (isDesktop) {
       void window.electron?.dictation?.start?.({ language: navigator.language || "en-US" });
@@ -453,6 +492,7 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
     setInput("");
     setSpeechError(null);
     dictatedTextRef.current = "";
+    dictationInterimRef.current = "";
     dictationBaseRef.current = "";
   }
 
