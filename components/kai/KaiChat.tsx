@@ -92,7 +92,7 @@ function mergeDraftText(base: string, finalTranscript: string, interimTranscript
   return `${trimmedBase}${separator}${spoken}`;
 }
 
-function mapSpeechError(error: string) {
+function mapBrowserSpeechError(error: string) {
   switch (error) {
     case "not-allowed":
     case "service-not-allowed":
@@ -106,6 +106,36 @@ function mapSpeechError(error: string) {
     default:
       return "Voice dictation could not start cleanly. Try again.";
   }
+}
+
+function mapDesktopDictationError(code?: string | null, message?: string | null) {
+  switch (code) {
+    case "speech-denied":
+      return "Speech recognition permission was denied for Verge.";
+    case "speech-restricted":
+      return "Speech recognition is restricted on this Mac.";
+    case "microphone-denied":
+      return "Microphone access was denied for Verge.";
+    case "recognizer-missing":
+      return "Speech recognition could not start for your current language.";
+    case "speech-unavailable":
+      return "Speech recognition is unavailable right now on this Mac.";
+    case "speech-runtime":
+      return message || "Desktop dictation stopped unexpectedly.";
+    case "bootstrap":
+    case "launch":
+      return message || "Desktop dictation could not start cleanly.";
+    default:
+      return message || "Desktop dictation could not start cleanly.";
+  }
+}
+
+function subscribeToDesktopBridge() {
+  return () => {};
+}
+
+function getDesktopSnapshot() {
+  return Boolean(window.electron?.isDesktop);
 }
 
 function subscribeToSpeechSupport() {
@@ -165,12 +195,15 @@ export default function KaiChat({ viewer, mode, onSignOut }: KaiChatProps) {
   const [hasStarted, setHasStarted] = useState(false);
   const [isListening, setIsListening] = useState(false);
   const [speechError, setSpeechError] = useState<string | null>(null);
+  const [desktopDictationSupported, setDesktopDictationSupported] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const recognitionRef = useRef<SpeechRecognition | null>(null);
   const dictationBaseRef = useRef("");
   const dictatedTextRef = useRef("");
-  const speechSupported = useSyncExternalStore(subscribeToSpeechSupport, getSpeechSupportSnapshot, () => false);
+  const isDesktop = useSyncExternalStore(subscribeToDesktopBridge, getDesktopSnapshot, () => false);
+  const browserSpeechSupported = useSyncExternalStore(subscribeToSpeechSupport, getSpeechSupportSnapshot, () => false);
+  const speechSupported = isDesktop ? desktopDictationSupported : browserSpeechSupported;
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -187,6 +220,64 @@ export default function KaiChat({ viewer, mode, onSignOut }: KaiChatProps) {
   }, [input]);
 
   useEffect(() => {
+    if (!isDesktop) {
+      return;
+    }
+
+    let cancelled = false;
+    window.electron?.dictation?.getState?.().then((snapshot) => {
+      if (!cancelled && snapshot) {
+        setDesktopDictationSupported(Boolean(snapshot.platformSupported));
+        setIsListening(Boolean(snapshot.running));
+      }
+    });
+
+    const unsubscribe = window.electron?.dictation?.onEvent?.((event) => {
+      if (cancelled || !event) {
+        return;
+      }
+
+      if (event.type === "start") {
+        dictatedTextRef.current = "";
+        setSpeechError(null);
+        setIsListening(true);
+        return;
+      }
+
+      if (event.type === "transcript") {
+        dictatedTextRef.current = event.text?.trim() || "";
+        setInput(mergeDraftText(dictationBaseRef.current, "", dictatedTextRef.current));
+        return;
+      }
+
+      if (event.type === "error") {
+        setSpeechError(mapDesktopDictationError(event.code, event.message));
+        setIsListening(false);
+        return;
+      }
+
+      if (event.type === "end") {
+        setIsListening(false);
+        const finalDraft = mergeDraftText(dictationBaseRef.current, "", dictatedTextRef.current);
+        setInput(finalDraft);
+        dictationBaseRef.current = finalDraft;
+        dictatedTextRef.current = "";
+      }
+    });
+
+    return () => {
+      cancelled = true;
+      unsubscribe?.();
+    };
+  }, [isDesktop]);
+
+  useEffect(() => {
+    if (isDesktop) {
+      recognitionRef.current?.abort();
+      recognitionRef.current = null;
+      return;
+    }
+
     const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!Recognition) {
       return;
@@ -203,6 +294,7 @@ export default function KaiChat({ viewer, mode, onSignOut }: KaiChatProps) {
     };
 
     recognition.onresult = (event) => {
+      let finalTranscript = "";
       let interimTranscript = "";
 
       for (let index = event.resultIndex; index < event.results.length; index += 1) {
@@ -210,23 +302,25 @@ export default function KaiChat({ viewer, mode, onSignOut }: KaiChatProps) {
         const transcript = result[0]?.transcript || "";
 
         if (result.isFinal) {
-          dictatedTextRef.current += transcript;
+          finalTranscript += transcript;
         } else {
           interimTranscript += transcript;
         }
       }
 
-      setInput(mergeDraftText(dictationBaseRef.current, dictatedTextRef.current, interimTranscript));
+      dictatedTextRef.current = `${dictatedTextRef.current}${finalTranscript}`.trim();
+      const sessionTranscript = `${dictatedTextRef.current} ${interimTranscript}`.trim();
+      setInput(mergeDraftText(dictationBaseRef.current, "", sessionTranscript));
     };
 
     recognition.onerror = (event) => {
-      setSpeechError(mapSpeechError(event.error));
+      setSpeechError(mapBrowserSpeechError(event.error));
       setIsListening(false);
     };
 
     recognition.onend = () => {
       setIsListening(false);
-      const finalDraft = mergeDraftText(dictationBaseRef.current, dictatedTextRef.current);
+      const finalDraft = mergeDraftText(dictationBaseRef.current, "", dictatedTextRef.current);
       setInput(finalDraft);
       dictationBaseRef.current = finalDraft;
       dictatedTextRef.current = "";
@@ -242,16 +336,21 @@ export default function KaiChat({ viewer, mode, onSignOut }: KaiChatProps) {
       recognition.abort();
       recognitionRef.current = null;
     };
-  }, []);
+  }, [isDesktop]);
 
   const firstName = viewer.name.split(" ")[0] || viewer.email?.split("@")[0] || "there";
 
   function stopListening() {
+    if (isDesktop) {
+      void window.electron?.dictation?.stop?.();
+      return;
+    }
+
     recognitionRef.current?.stop();
   }
 
   function toggleListening() {
-    if (!recognitionRef.current || !speechSupported || isLoading) {
+    if (!speechSupported || isLoading) {
       if (!speechSupported) {
         setSpeechError("Voice dictation is not available in this environment.");
       }
@@ -268,8 +367,13 @@ export default function KaiChat({ viewer, mode, onSignOut }: KaiChatProps) {
     dictationBaseRef.current = input;
     dictatedTextRef.current = "";
 
+    if (isDesktop) {
+      void window.electron?.dictation?.start?.({ language: navigator.language || "en-US" });
+      return;
+    }
+
     try {
-      recognitionRef.current.start();
+      recognitionRef.current?.start();
     } catch {
       setSpeechError("Voice dictation could not start cleanly. Try again.");
     }

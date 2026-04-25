@@ -26,13 +26,13 @@ export async function GET() {
 
 export async function POST(request: NextRequest) {
   try {
-    const { messages }: { messages?: Message[] } = await request.json();
+    const { messages, memory }: { messages?: Message[]; memory?: string | null } = await request.json();
 
     if (!Array.isArray(messages)) {
       return new Response("Invalid messages payload", { status: 400 });
     }
 
-    const text = await generateKaiReply(messages);
+    const text = await generateKaiReply(messages, memory);
     return streamText(text);
   } catch (error) {
     console.error("[Kai API] Error:", error);
@@ -40,15 +40,31 @@ export async function POST(request: NextRequest) {
   }
 }
 
-async function generateKaiReply(messages: Message[]) {
+async function generateKaiReply(messages: Message[], memory?: string | null) {
   if (!GEMINI_API_KEY) {
     return buildFallbackReply(messages);
   }
 
-  const contents: GeminiContent[] = messages.map((message) => ({
-    role: message.role === "assistant" ? "model" : "user",
-    parts: [{ text: message.content }],
-  }));
+  const contents: GeminiContent[] = [];
+  const trimmedMemory = memory?.trim().slice(0, 600) || "";
+
+  if (trimmedMemory) {
+    contents.push({
+      role: "user",
+      parts: [{ text: `Known context from earlier in this session:\n${trimmedMemory}` }],
+    });
+  }
+
+  for (const message of messages.slice(-7)) {
+    if (!message.content?.trim()) {
+      continue;
+    }
+
+    contents.push({
+      role: message.role === "assistant" ? "model" : "user",
+      parts: [{ text: message.content }],
+    });
+  }
 
   try {
     const text = await generateGeminiReplyWithRetry(contents);
@@ -176,8 +192,8 @@ async function generateGeminiReply(contents: GeminiContent[]) {
         },
         contents,
         generationConfig: {
-          temperature: 0.75,
-          maxOutputTokens: 1536,
+          temperature: 0.7,
+          maxOutputTokens: 900,
         },
       }),
     },

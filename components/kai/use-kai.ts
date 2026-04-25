@@ -32,6 +32,8 @@ export function useKai() {
         role: message.role,
         content: message.content.replace(/---DATA_OUTPUT_START---[\s\S]*?---DATA_OUTPUT_END---/, "").trim(),
       }));
+      const recentHistory = history.filter((message) => message.content).slice(-6);
+      const memory = latestProfile?.summary?.trim() || null;
 
       const userMessage: Message = {
         id: crypto.randomUUID(),
@@ -62,7 +64,8 @@ export function useKai() {
             "Content-Type": "application/json",
           },
           body: JSON.stringify({
-            messages: [...history, { role: "user", content: cleanedText }],
+            messages: [...recentHistory, { role: "user", content: cleanedText }],
+            memory,
           }),
           signal: abortRef.current.signal,
         });
@@ -149,7 +152,7 @@ export function useKai() {
         setIsLoading(false);
       }
     },
-    [isLoading, messages],
+    [isLoading, latestProfile, messages],
   );
 
   const resetConversation = useCallback(() => {

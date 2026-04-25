@@ -1,7 +1,10 @@
 const { app, BrowserWindow, Menu, ipcMain, screen, session, shell } = require("electron");
-const path = require("path");
-const { spawn } = require("child_process");
+const fs = require("fs/promises");
 const http = require("http");
+const os = require("os");
+const path = require("path");
+const readline = require("readline");
+const { spawn } = require("child_process");
 
 const isDev = !app.isPackaged;
 const NEXT_PORT = 3000;
@@ -17,10 +20,18 @@ const COMPACT_WINDOW = {
   height: 94,
   topInset: 14,
 };
+
 const windowState = {
   alwaysOnTop: true,
   compact: false,
   expandedBounds: null,
+};
+
+const dictationState = {
+  process: null,
+  compilerPromise: null,
+  stopTimer: null,
+  didEmitEnd: false,
 };
 
 let mainWindow = null;
@@ -53,6 +64,7 @@ function startNextServer() {
       if (settled) {
         return;
       }
+
       settled = true;
       clearTimeout(timeout);
       callback();
@@ -97,10 +109,28 @@ function getWindowSnapshot() {
   };
 }
 
-function emitWindowState() {
+function getDictationSnapshot() {
+  return {
+    running: Boolean(dictationState.process),
+    platformSupported: process.platform === "darwin",
+  };
+}
+
+function emitToRenderer(channel, payload) {
   if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.webContents.send("window:state-changed", getWindowSnapshot());
+    mainWindow.webContents.send(channel, payload);
   }
+}
+
+function emitWindowState() {
+  emitToRenderer("window:state-changed", getWindowSnapshot());
+}
+
+function emitDictationEvent(event) {
+  if (event?.type === "end") {
+    dictationState.didEmitEnd = true;
+  }
+  emitToRenderer("dictation:event", event);
 }
 
 function rememberExpandedBounds() {
@@ -249,14 +279,178 @@ function createWindow() {
   });
 }
 
+async function ensureMacDictationBinary() {
+  if (process.platform !== "darwin") {
+    throw new Error("Native desktop dictation is currently macOS-only.");
+  }
+
+  if (dictationState.compilerPromise) {
+    return dictationState.compilerPromise;
+  }
+
+  dictationState.compilerPromise = (async () => {
+    const sourcePath = path.join(__dirname, "macosDictation.swift");
+    const binDir = path.join(app.getPath("userData"), "native-tools");
+    const binaryPath = path.join(binDir, "verge-dictation");
+
+    await fs.mkdir(binDir, { recursive: true });
+
+    let shouldCompile = true;
+    try {
+      const [sourceStats, binaryStats] = await Promise.all([fs.stat(sourcePath), fs.stat(binaryPath)]);
+      shouldCompile = sourceStats.mtimeMs > binaryStats.mtimeMs;
+    } catch {
+      shouldCompile = true;
+    }
+
+    if (!shouldCompile) {
+      return binaryPath;
+    }
+
+    await runProcess("xcrun", [
+      "swiftc",
+      "-parse-as-library",
+      "-O",
+      "-framework",
+      "AVFoundation",
+      "-framework",
+      "Speech",
+      sourcePath,
+      "-o",
+      binaryPath,
+    ]);
+
+    return binaryPath;
+  })();
+
+  try {
+    return await dictationState.compilerPromise;
+  } finally {
+    dictationState.compilerPromise = null;
+  }
+}
+
+function runProcess(command, args) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, {
+      cwd: os.homedir(),
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+
+    let stderr = "";
+
+    child.stderr.on("data", (data) => {
+      stderr += data.toString();
+    });
+
+    child.on("error", reject);
+    child.on("exit", (code) => {
+      if (code === 0) {
+        resolve();
+        return;
+      }
+
+      reject(new Error(stderr.trim() || `${command} exited with code ${code ?? "unknown"}`));
+    });
+  });
+}
+
+function cleanupDictationProcess(child) {
+  if (dictationState.stopTimer) {
+    clearTimeout(dictationState.stopTimer);
+    dictationState.stopTimer = null;
+  }
+
+  if (dictationState.process === child) {
+    dictationState.process = null;
+  }
+}
+
+function stopNativeDictation() {
+  const child = dictationState.process;
+  if (!child) {
+    return getDictationSnapshot();
+  }
+
+  try {
+    child.stdin.write("\n");
+  } catch {}
+
+  if (dictationState.stopTimer) {
+    clearTimeout(dictationState.stopTimer);
+  }
+
+  dictationState.stopTimer = setTimeout(() => {
+    try {
+      child.kill("SIGTERM");
+    } catch {}
+  }, 450);
+
+  return getDictationSnapshot();
+}
+
+async function startNativeDictation(language) {
+  stopNativeDictation();
+  const binaryPath = await ensureMacDictationBinary();
+  const locale = language || app.getLocale() || "en-US";
+
+  const child = spawn(binaryPath, [locale], {
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+
+  dictationState.process = child;
+  dictationState.didEmitEnd = false;
+
+  const output = readline.createInterface({
+    input: child.stdout,
+  });
+
+  output.on("line", (line) => {
+    if (!line.trim()) {
+      return;
+    }
+
+    try {
+      const event = JSON.parse(line);
+      emitDictationEvent(event);
+    } catch (error) {
+      console.error("[Dictation] Failed to parse helper output:", error, line);
+    }
+  });
+
+  child.stderr.on("data", (data) => {
+    console.error("[Dictation helper]", data.toString());
+  });
+
+  child.on("exit", (_code, signal) => {
+    output.close();
+    cleanupDictationProcess(child);
+
+    if (!dictationState.didEmitEnd) {
+      emitDictationEvent({
+        type: "end",
+        signal,
+      });
+    }
+  });
+
+  child.on("error", (error) => {
+    console.error("[Dictation] Failed to start helper:", error);
+    emitDictationEvent({
+      type: "error",
+      code: "launch",
+      message: error.message,
+    });
+    cleanupDictationProcess(child);
+  });
+
+  return getDictationSnapshot();
+}
+
 function wireIpc() {
   ipcMain.handle("window:get-state", () => getWindowSnapshot());
-  ipcMain.handle("window:minimize", () => {
-    return setWindowMode(true);
-  });
-  ipcMain.handle("window:restore", () => {
-    return setWindowMode(false);
-  });
+  ipcMain.handle("window:minimize", () => setWindowMode(true));
+  ipcMain.handle("window:restore", () => setWindowMode(false));
   ipcMain.handle("window:close", () => {
     mainWindow?.close();
   });
@@ -266,6 +460,20 @@ function wireIpc() {
     emitWindowState();
     return getWindowSnapshot();
   });
+  ipcMain.handle("dictation:get-state", () => getDictationSnapshot());
+  ipcMain.handle("dictation:start", async (_event, options = {}) => {
+    try {
+      return await startNativeDictation(options.language);
+    } catch (error) {
+      emitDictationEvent({
+        type: "error",
+        code: "bootstrap",
+        message: error instanceof Error ? error.message : "Failed to start desktop dictation.",
+      });
+      return getDictationSnapshot();
+    }
+  });
+  ipcMain.handle("dictation:stop", () => stopNativeDictation());
 }
 
 app.whenReady().then(async () => {
@@ -292,6 +500,7 @@ app.whenReady().then(async () => {
 });
 
 app.on("window-all-closed", () => {
+  stopNativeDictation();
   if (nextServer) {
     nextServer.kill();
   }
@@ -301,6 +510,7 @@ app.on("window-all-closed", () => {
 });
 
 app.on("before-quit", () => {
+  stopNativeDictation();
   if (nextServer) {
     nextServer.kill();
   }

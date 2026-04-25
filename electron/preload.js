@@ -17,4 +17,16 @@ contextBridge.exposeInMainWorld("electron", {
       };
     },
   },
+  dictation: {
+    getState: () => ipcRenderer.invoke("dictation:get-state"),
+    start: (options) => ipcRenderer.invoke("dictation:start", options),
+    stop: () => ipcRenderer.invoke("dictation:stop"),
+    onEvent: (callback) => {
+      const listener = (_event, payload) => callback(payload);
+      ipcRenderer.on("dictation:event", listener);
+      return () => {
+        ipcRenderer.removeListener("dictation:event", listener);
+      };
+    },
+  },
 });

@@ -6,6 +6,20 @@ declare global {
     compact: boolean;
   };
 
+  type VergeDictationState = {
+    running: boolean;
+    platformSupported: boolean;
+  };
+
+  type VergeDictationEvent = {
+    type: "start" | "transcript" | "error" | "end";
+    text?: string | null;
+    code?: string | null;
+    message?: string | null;
+    isFinal?: boolean | null;
+    signal?: string | null;
+  };
+
   interface Window {
     electron?: {
       platform: string;
@@ -17,6 +31,12 @@ declare global {
         close?: () => Promise<void>;
         toggleAlwaysOnTop?: () => Promise<VergeWindowState>;
         onStateChange?: (callback: (snapshot: VergeWindowState) => void) => () => void;
+      };
+      dictation?: {
+        getState?: () => Promise<VergeDictationState>;
+        start?: (options?: { language?: string }) => Promise<VergeDictationState>;
+        stop?: () => Promise<VergeDictationState>;
+        onEvent?: (callback: (event: VergeDictationEvent) => void) => () => void;
       };
     };
   }
