@@ -4,6 +4,7 @@ import type { PlannerHistoryRun } from "@/lib/plan-store";
 const ACTIONABLE_KINDS = new Set<KaiExecutionBlock["kind"]>(["task", "fixed", "workout"]);
 const HIGH_PRIORITY_PATTERN =
   /\b(test|exam|quiz|deadline|paper|essay|project|midterm|final|interview|presentation|study|calc|calculus|physics|chem|research|draft|outline)\b/i;
+const LEADERBOARD_RESET_AT = Date.parse("2026-04-26T13:20:41-05:00");
 
 export type ScoreEntry = {
   blockKey: string;
@@ -141,7 +142,9 @@ export function buildAccountScoreboard({
   elapsedSecondsByBlock: Record<string, number>;
   currentBlockKey: string | null;
 }): ScoreboardSummary {
-  const historyEntries = historyRuns.flatMap((run) =>
+  const eligibleHistoryRuns = historyRuns.filter((run) => isRunEligibleForLeaderboard(run.createdAt));
+
+  const historyEntries = eligibleHistoryRuns.flatMap((run) =>
     buildScoreEntriesForPlan({
       plan: {
         plan_id: run.planKey,
@@ -161,14 +164,29 @@ export function buildAccountScoreboard({
     ? historyEntries.filter((entry) => entry.sourceRunId !== activeRunId)
     : historyEntries;
 
-  const activeEntries = buildScoreEntriesForPlan({
-    plan: activePlan,
-    sourceRunId: activeRunId,
-    elapsedSecondsByBlock,
-    currentBlockKey,
-  });
+  const activeRunFromHistory = activeRunId ? historyRuns.find((run) => run.id === activeRunId) || null : null;
+  const shouldIncludeActivePlan =
+    !activeRunFromHistory || isRunEligibleForLeaderboard(activeRunFromHistory.createdAt);
+  const activeEntries = shouldIncludeActivePlan
+    ? buildScoreEntriesForPlan({
+        plan: activePlan,
+        sourceRunId: activeRunId,
+        elapsedSecondsByBlock,
+        currentBlockKey,
+      })
+    : [];
 
   return summarizeEntries([...filteredHistoryEntries, ...activeEntries]);
+}
+
+function isRunEligibleForLeaderboard(createdAt: string) {
+  const createdAtMs = Date.parse(createdAt);
+
+  if (Number.isNaN(createdAtMs)) {
+    return true;
+  }
+
+  return createdAtMs >= LEADERBOARD_RESET_AT;
 }
 
 function buildScoreEntriesForPlan({
