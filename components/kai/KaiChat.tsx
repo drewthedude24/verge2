@@ -8,6 +8,7 @@ import {
   buildExecutionPlanFromHistoryRun,
   buildLocalExecutionPlan,
   buildPlannerHistoryContext,
+  deletePlannerRun,
   loadPlannerHistory,
   saveExecutionPlan,
   updateExecutionBlockStatus,
@@ -282,6 +283,7 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
   const [desktopDictationSupported, setDesktopDictationSupported] = useState(false);
   const [plannerHistory, setPlannerHistory] = useState<PlannerHistoryRun[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
+  const [deletingHistoryRunId, setDeletingHistoryRunId] = useState<string | null>(null);
   const [selectedHistoryRunId, setSelectedHistoryRunId] = useState<string | null>(null);
   const [showHistoryPlan, setShowHistoryPlan] = useState(false);
   const [planStatusOverrides, setPlanStatusOverrides] = useState<Record<string, "pending" | "completed" | "skipped">>(
@@ -1154,6 +1156,52 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
     setTimerRunning(false);
   }, []);
 
+  const handleDeleteHistoryRun = useCallback(
+    async (runId: string) => {
+      if (!viewer.id) {
+        setPlannerHistory((currentRuns) => currentRuns.filter((run) => run.id !== runId));
+        setSelectedHistoryRunId((currentValue) => (currentValue === runId ? null : currentValue));
+        return;
+      }
+
+      setDeletingHistoryRunId(runId);
+      const removedRun = plannerHistory.find((run) => run.id === runId) || null;
+
+      setPlannerHistory((currentRuns) => currentRuns.filter((run) => run.id !== runId));
+      setSelectedHistoryRunId((currentValue) => (currentValue === runId ? null : currentValue));
+
+      if (selectedHistoryRunId === runId || activeRunId === runId) {
+        setShowHistoryPlan(false);
+        setTimerRunning(false);
+      }
+
+      if (!supabase) {
+        setDeletingHistoryRunId(null);
+        return;
+      }
+
+      try {
+        await deletePlannerRun({
+          supabase,
+          userId: viewer.id,
+          runId,
+        });
+      } catch (error) {
+        console.error("[Verge] Failed to delete planner history run:", error);
+        if (removedRun) {
+          setPlannerHistory((currentRuns) => {
+            const nextRuns = [...currentRuns, removedRun];
+            nextRuns.sort((left, right) => Date.parse(right.createdAt) - Date.parse(left.createdAt));
+            return nextRuns;
+          });
+        }
+      } finally {
+        setDeletingHistoryRunId(null);
+      }
+    },
+    [activeRunId, plannerHistory, selectedHistoryRunId, supabase, viewer.id],
+  );
+
   const handleReturnToLivePlan = useCallback(() => {
     if (!currentGeneratedPlan) {
       return;
@@ -1507,10 +1555,13 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
         onPauseTimer={handlePauseTimer}
         onResetTimer={handleResetTimer}
         onSelectHistoryRun={handleSelectHistoryRun}
+        onDeleteHistoryRun={handleDeleteHistoryRun}
         onReturnToLivePlan={handleReturnToLivePlan}
         canReturnToLivePlan={Boolean(currentGeneratedPlan)}
         leaderboardName={viewer.isGuest ? "You" : viewer.name}
         scoreboard={accountScoreboard}
+        deletingHistoryRunId={deletingHistoryRunId}
+        protectedHistoryRunId={activeRunId}
       />
     </DesktopShell>
   );

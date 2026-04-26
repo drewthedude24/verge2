@@ -24,10 +24,13 @@ interface ExecutionRailProps {
   onPauseTimer: () => void;
   onResetTimer: () => void;
   onSelectHistoryRun: (runId: string) => void;
+  onDeleteHistoryRun: (runId: string) => void;
   onReturnToLivePlan: () => void;
   canReturnToLivePlan?: boolean;
   leaderboardName: string;
   scoreboard: ScoreboardSummary;
+  deletingHistoryRunId?: string | null;
+  protectedHistoryRunId?: string | null;
 }
 
 function formatClockLabel(value: string) {
@@ -122,10 +125,13 @@ export default function ExecutionRail({
   onPauseTimer,
   onResetTimer,
   onSelectHistoryRun,
+  onDeleteHistoryRun,
   onReturnToLivePlan,
   canReturnToLivePlan = false,
   leaderboardName,
   scoreboard,
+  deletingHistoryRunId = null,
+  protectedHistoryRunId = null,
 }: ExecutionRailProps) {
   const [leaderboardOpen, setLeaderboardOpen] = useState(false);
   const blocks = plan?.blocks ?? [];
@@ -398,30 +404,50 @@ export default function ExecutionRail({
           <div className="mt-4 space-y-3">
             {historyRuns.map((run) => {
               const isSelected = run.id === selectedHistoryRunId;
+              const isDeleting = deletingHistoryRunId === run.id;
+              const isProtected = protectedHistoryRunId === run.id;
               return (
-                <button
+                <div
                   key={run.id}
-                  onClick={() => onSelectHistoryRun(run.id)}
-                  className={`w-full rounded-[22px] border px-4 py-3 text-left transition ${
+                  className={`rounded-[22px] border px-4 py-3 transition ${
                     isSelected
                       ? "border-orange-300/20 bg-orange-300/10"
                       : "border-white/10 bg-white/[0.05] hover:border-white/20 hover:bg-white/[0.07]"
                   }`}
-                  type="button"
                 >
                   <div className="flex items-start justify-between gap-3">
-                    <div>
-                      <p className="text-sm font-semibold text-white/92">{run.scopeLabel}</p>
-                      <p className="mt-1 text-[11px] text-white/40">{formatHistoryDate(run.createdAt)}</p>
-                    </div>
-                    <span className="rounded-full border border-white/10 bg-white/6 px-2.5 py-1 text-[10px] uppercase tracking-[0.16em] text-white/55">
-                      {run.blocks.length} blocks
-                    </span>
+                    <button onClick={() => onSelectHistoryRun(run.id)} className="min-w-0 flex-1 text-left" type="button">
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <p className="truncate text-sm font-semibold text-white/92">{run.scopeLabel}</p>
+                          <p className="mt-1 text-[11px] text-white/40">{formatHistoryDate(run.createdAt)}</p>
+                        </div>
+                        <span className="rounded-full border border-white/10 bg-white/6 px-2.5 py-1 text-[10px] uppercase tracking-[0.16em] text-white/55">
+                          {run.blocks.length} blocks
+                        </span>
+                      </div>
+                    </button>
                   </div>
                   <p className="mt-2 line-clamp-2 text-xs leading-5 text-white/55">
                     {run.planSummary || run.focusStrategy || run.sourcePrompt || "Saved planner run"}
                   </p>
-                </button>
+                  <div className="mt-3 flex justify-end">
+                    <button
+                      onClick={() => onDeleteHistoryRun(run.id)}
+                      disabled={isDeleting || isProtected}
+                      className={`rounded-full border px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.16em] transition ${
+                        isProtected
+                          ? "cursor-not-allowed border-white/10 bg-white/[0.04] text-white/30"
+                          : isDeleting
+                            ? "cursor-wait border-red-300/20 bg-red-300/10 text-red-100/70"
+                            : "border-red-300/20 bg-red-300/10 text-red-100 hover:bg-red-300/20"
+                      }`}
+                      type="button"
+                    >
+                      {isProtected ? "Active" : isDeleting ? "Removing…" : "Remove"}
+                    </button>
+                  </div>
+                </div>
               );
             })}
           </div>

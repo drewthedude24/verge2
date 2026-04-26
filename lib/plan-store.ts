@@ -65,6 +65,14 @@ type PlannerBlocksUpdateTable = {
   };
 };
 
+type PlannerRunsDeleteTable = {
+  delete: () => {
+    eq: (column: string, value: string) => {
+      eq: (nextColumn: string, nextValue: string) => MutationResult;
+    };
+  };
+};
+
 type PlannerRunsSelectTable<Row> = {
   select: (columns: string) => {
     eq: (column: string, value: string) => {
@@ -97,6 +105,10 @@ function plannerBlocksUpdateTable(supabase: BrowserSupabaseClient) {
 
 function plannerRunsSelectTable<Row>(supabase: BrowserSupabaseClient) {
   return supabase.from("planner_runs" as never) as unknown as PlannerRunsSelectTable<Row>;
+}
+
+function plannerRunsDeleteTable(supabase: BrowserSupabaseClient) {
+  return supabase.from("planner_runs" as never) as unknown as PlannerRunsDeleteTable;
 }
 
 function plannerBlocksSelectTable<Row>(supabase: BrowserSupabaseClient) {
@@ -414,6 +426,24 @@ export async function updateExecutionBlockStatus({
 
   if (error) {
     throw new Error(formatSupabaseError("planner_blocks", "update", error));
+  }
+}
+
+export async function deletePlannerRun({
+  supabase,
+  userId,
+  runId,
+}: {
+  supabase: BrowserSupabaseClient;
+  userId: string;
+  runId: string;
+}) {
+  const plannerRuns = plannerRunsDeleteTable(supabase);
+
+  const { error } = await plannerRuns.delete().eq("id", runId).eq("user_id", userId);
+
+  if (error) {
+    throw new Error(formatSupabaseError("planner_runs", "delete", error));
   }
 }
 
