@@ -322,15 +322,11 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
     };
   }, [generatedPlan, planStatusOverrides]);
   const activeHistoryRun = useMemo(() => {
-    if (!plannerHistory.length) {
+    if (!plannerHistory.length || !selectedHistoryRunId) {
       return null;
     }
 
-    if (selectedHistoryRunId) {
-      return plannerHistory.find((run) => run.id === selectedHistoryRunId) || plannerHistory[0];
-    }
-
-    return plannerHistory[0];
+    return plannerHistory.find((run) => run.id === selectedHistoryRunId) || null;
   }, [plannerHistory, selectedHistoryRunId]);
   const historyPlan = useMemo(() => {
     if (!activeHistoryRun) {
@@ -445,11 +441,7 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
       });
       setPlannerHistory(runs);
       setSelectedHistoryRunId((currentValue) => {
-        if (currentValue && runs.some((run) => run.id === currentValue)) {
-          return currentValue;
-        }
-
-        return runs[0]?.id ?? null;
+        return currentValue && runs.some((run) => run.id === currentValue) ? currentValue : null;
       });
     } catch (error) {
       console.error("[Verge] Failed to load planner history:", error);
@@ -488,11 +480,7 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
 
           setPlannerHistory(runs);
           setSelectedHistoryRunId((currentValue) => {
-            if (currentValue && runs.some((run) => run.id === currentValue)) {
-              return currentValue;
-            }
-
-            return runs[0]?.id ?? null;
+            return currentValue && runs.some((run) => run.id === currentValue) ? currentValue : null;
           });
         })
         .catch((error) => {
@@ -877,7 +865,6 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
         });
         setPersistedPlanKey(generatedPlan.plan_id);
         setPersistErrorPlanKey((currentValue) => (currentValue === generatedPlan.plan_id ? null : currentValue));
-        setSelectedHistoryRunId(runId);
         void refreshPlannerHistory();
       })
       .catch((error) => {
@@ -1043,6 +1030,7 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
     setPersistErrorPlanKey(null);
     setPersistedRunState(null);
     setPlanStatusOverrides({});
+    setSelectedHistoryRunId(null);
     setShowHistoryPlan(false);
     setTimerRunning(false);
     setTimerRemainingSeconds(0);
