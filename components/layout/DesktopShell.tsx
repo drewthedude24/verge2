@@ -97,10 +97,10 @@ export default function DesktopShell({
     return (
       <main className="min-h-screen bg-transparent px-3 pt-3 text-white">
         <div
-          className="mx-auto flex max-w-[920px] items-center justify-between gap-4 rounded-full border border-white/16 bg-[#0b0e13]/55 px-4 py-3 shadow-[0_24px_80px_rgba(0,0,0,0.28)] backdrop-blur-3xl"
+          className="mx-auto flex max-w-[1080px] items-center justify-between gap-3 rounded-full border border-white/16 bg-[#0b0e13]/58 px-4 py-3 shadow-[0_24px_80px_rgba(0,0,0,0.28)] backdrop-blur-3xl"
           style={dragRegionStyle}
         >
-          <div className="min-w-0 flex-1">
+          <div className="min-w-0 max-w-[260px] flex-1">
             <div className="flex items-center gap-3">
               <span
                 className="rounded-full border border-orange-400/20 bg-orange-400/10 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.2em] text-orange-200"

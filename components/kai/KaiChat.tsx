@@ -1346,17 +1346,27 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
   }
 
   const compactContent = currentBlock ? (
-    <div className="flex min-w-0 items-center gap-2 overflow-hidden">
-      <span className="rounded-full border border-orange-300/20 bg-orange-300/10 px-2 py-1 text-[9px] font-semibold uppercase tracking-[0.16em] text-orange-100">
-        {activePlanSource === "history" ? "history" : "active"}
-      </span>
-      <p className="min-w-0 flex-1 truncate text-[11px] text-white/78">{currentBlock.title}</p>
-      <span className="rounded-full border border-orange-300/20 bg-orange-300/10 px-2 py-1 text-[9px] font-semibold uppercase tracking-[0.16em] text-orange-100">
-        {scoreboard.currentEarnedPoints}/{scoreboard.currentTargetPoints} pts
-      </span>
-      <span className="rounded-full border border-white/10 bg-white/8 px-2 py-1 text-[10px] font-semibold text-white/88">
-        {timerLabel}
-      </span>
+    <div className="flex min-w-0 items-center gap-3 overflow-hidden">
+      <div className="min-w-0 flex flex-1 items-center gap-2 overflow-hidden">
+        <span className="rounded-full border border-orange-300/20 bg-orange-300/10 px-2.5 py-1 text-[9px] font-semibold uppercase tracking-[0.16em] text-orange-100">
+          {activePlanSource === "history" ? "history" : "active"}
+        </span>
+        <div className="min-w-0">
+          <p className="truncate text-[11px] font-medium text-white/88">{currentBlock.title}</p>
+          <p className="truncate text-[10px] text-white/45">
+            {scoreboard.currentEarnedPoints}/{scoreboard.currentTargetPoints} pts earned
+          </p>
+        </div>
+      </div>
+      <div className="flex shrink-0 items-center gap-2">
+        <span className="rounded-full border border-orange-300/20 bg-orange-300/10 px-2.5 py-1 text-[9px] font-semibold uppercase tracking-[0.16em] text-orange-100">
+          {scoreboard.currentEarnedPoints}/{scoreboard.currentTargetPoints} pts
+        </span>
+        <div className="rounded-[16px] border border-white/12 bg-white/10 px-3 py-1.5 text-center shadow-[0_8px_24px_rgba(0,0,0,0.18)]">
+          <p className="text-[8px] font-semibold uppercase tracking-[0.2em] text-white/45">Timer</p>
+          <p className="mt-0.5 text-[13px] font-semibold tabular-nums text-white">{timerLabel}</p>
+        </div>
+      </div>
     </div>
   ) : accountScoreboard.totalEarnedPoints > 0 ? (
     <div className="flex min-w-0 items-center gap-2 overflow-hidden">
