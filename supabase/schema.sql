@@ -40,6 +40,10 @@ create table if not exists public.planner_blocks (
 create index if not exists planner_runs_user_created_idx on public.planner_runs (user_id, created_at desc);
 create index if not exists planner_blocks_run_position_idx on public.planner_blocks (run_id, position);
 
+grant usage on schema public to authenticated;
+grant select, insert, update, delete on table public.planner_runs to authenticated;
+grant select, insert, update, delete on table public.planner_blocks to authenticated;
+
 alter table public.planner_runs enable row level security;
 alter table public.planner_blocks enable row level security;
 
