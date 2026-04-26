@@ -1,75 +1,264 @@
 # Verge
 
-Verge is a desktop-first planning app built with Next.js and Electron. You talk through your week, Kai helps shape a schedule, and the app runs inside a transparent desktop shell instead of feeling like a regular browser tab.
+Verge is a desktop-first AI planning app for students and young professionals.
 
-## What changed
+You talk through a messy day or week, Kai turns it into a real execution plan, and the desktop shell helps you work through one block at a time with a timer, completion controls, history, and saved plans.
 
-- the Electron shell is now frameless, glassy, and desktop-oriented
-- lint no longer fails on the Electron runtime files
-- Next builds no longer crash when Supabase env vars are missing
-- Gemini chat is routed through a safer server path with preview fallback mode
-- the login, root page, and dashboard flow are easier to follow
+## What works today
 
-## Run locally
+- Electron desktop shell for macOS
+- Chat-based planning with live model providers
+- Supabase auth and saved planner history
+- Structured execution plans stored as `planner_runs` and `planner_blocks`
+- Right-side execution rail with:
+  - current block
+  - timer
+  - complete / skip
+  - queue
+  - history
+- Compact minimized bar with current timer/task context
+- Past saved schedules can be pulled back into Kai when the user asks about previous plans
 
-1. Install dependencies:
+## Mac Quickstart
+
+### 1. Clone and install
 
 ```bash
+git clone https://github.com/CodedMed/Verge.git
+cd Verge
 npm install
 ```
 
-2. Create your local env file:
+### 2. Add environment variables
+
+Create a local env file:
 
 ```bash
 cp .env.local.example .env.local
 ```
 
-3. Add whichever credentials you have:
+There are two ways to do this:
 
-- `NEXT_PUBLIC_SUPABASE_URL`
-- `NEXT_PUBLIC_SUPABASE_ANON_KEY`
-- `GEMINI_API_KEY`
+- Founder / cofounder setup:
+  Ask the project owner for the shared team `.env.local` and place it in the repo root. This is the fastest path if you are on the Verge team.
+- Outside contributor / stranger setup:
+  Fill in your own Supabase and model keys, or run without them in fallback mode.
 
-If Supabase is missing, Verge still runs in preview mode.
-If Gemini is missing, Kai falls back to preview responses instead of breaking.
+Important:
+- `.env.local` is intentionally not committed to Git.
+- Do not paste private API keys into the repo, README, or public releases.
+- If you want strangers to use live AI in production, host Verge with server-side environment variables instead of shipping your private key inside the app.
 
-## Development
-
-Run the web app and Electron shell together:
+### 3. Start the desktop app
 
 ```bash
 npm run dev
 ```
 
-Run lint:
+This starts:
+
+- Next.js on `http://localhost:3000`
+- the Electron desktop shell
+
+If `3000` is already in use, stop the old process first.
+
+### 4. Stop the app
+
+In the terminal, press `Ctrl+C`.
+
+## Cofounder Setup
+
+If your cofounder just needs to run the same live setup you already use:
+
+1. Clone the repo
+2. Run `npm install`
+3. Copy the shared team `.env.local` into the project root
+4. Run `npm run dev`
+
+That means they do **not** need to go hunt for their own model keys just to run the same founder setup.
+
+The safe way to share that file is out-of-band:
+
+- AirDrop
+- 1Password / Bitwarden secure note
+- encrypted team vault
+- private message with revocable secret sharing
+
+Do **not** commit `.env.local`.
+
+## Supabase Setup
+
+Supabase gives Verge:
+
+- sign in
+- cloud-backed saved plans
+- saved task blocks across devices
+- the base for history, streaks, leaderboard, and social features later
+
+### 1. Create a Supabase project
+
+In Supabase, create a project and copy:
+
+- project base URL
+- `anon public` key
+
+Your `.env.local` should use the base URL, not the REST path:
 
 ```bash
+NEXT_PUBLIC_SUPABASE_URL=https://your-project-id.supabase.co
+NEXT_PUBLIC_SUPABASE_ANON_KEY=your_anon_public_key
+```
+
+### 2. Run the schema
+
+Open the SQL editor in Supabase and run the contents of:
+
+[`supabase/schema.sql`](/Users/johnmeng_1/Documents/Codex/2026-04-22-https-claude-ai-share-df5b5d13-3f4e/verge-fresh/supabase/schema.sql)
+
+That creates the tables and policies Verge needs:
+
+- `planner_runs`
+- `planner_blocks`
+
+### 3. Confirm it works
+
+1. Sign in inside Verge
+2. Ask Kai for a concrete schedule
+3. Open Supabase Table Editor
+4. Check:
+   - `planner_runs`
+   - `planner_blocks`
+
+If rows appear there, Supabase is connected correctly.
+
+## Model Providers
+
+Verge supports multiple providers through environment variables:
+
+- Cerebras
+- Groq
+- OpenRouter
+- Gemini
+
+The app can run in:
+
+- `LLM_PROVIDER=auto`
+- or a specific provider like `cerebras` / `gemini`
+
+Example:
+
+```bash
+LLM_PROVIDER=auto
+
+GEMINI_API_KEY=
+GEMINI_MODEL=gemini-2.5-flash
+
+OPENROUTER_API_KEY=
+OPENROUTER_MODEL=openrouter/free
+
+GROQ_API_KEY=
+GROQ_MODEL=llama-3.1-8b-instant
+
+CEREBRAS_API_KEY=
+CEREBRAS_MODEL=qwen-3-235b-a22b-instruct-2507
+```
+
+### About the shared founder key
+
+If you already have a working founder `.env.local`, your cofounder can use that same local file to run the same setup.
+
+For public distribution, do **not** bake your private provider key into the app bundle. That would expose the key to anyone who downloads it.
+
+For a real public launch, the correct setup is:
+
+- deploy Verge with server-side env vars
+- keep secrets on the server
+- let the desktop/web client talk to your backend
+
+## How Verge stores plans
+
+When Kai creates a schedule, the structured output is saved as:
+
+- one `planner_run`
+- many `planner_blocks`
+
+That is what powers:
+
+- active task execution
+- complete / skip state
+- timer UI
+- history retrieval
+- future leaderboard points and streaks
+
+## Asking Kai about previous schedules
+
+Kai can now use saved Supabase history when the user asks things like:
+
+- "What schedule did you make for me yesterday?"
+- "Reuse my last schedule."
+- "Compare this plan to the one from before."
+
+Verge loads recent `planner_runs` and `planner_blocks`, turns them into planner context, and sends that context into the model when the user is clearly asking about history or when they intentionally open a saved run in the history rail.
+
+## Development Scripts
+
+```bash
+npm run dev
+npm run dev:next
+npm run dev:electron
 npm run lint
-```
-
-Build the Next standalone app:
-
-```bash
 npm run build:next
-```
-
-Package desktop builds:
-
-```bash
 npm run dist:mac
 npm run dist:win
 ```
 
-## Structure
+## Project Structure
 
 - `app/` — Next app routes and API
 - `components/auth/` — auth UI
-- `components/kai/` — chat UI and state
-- `components/layout/` — shared desktop shell
-- `electron/` — Electron main/preload runtime
-- `lib/` — prompts and config helpers
+- `components/kai/` — Kai chat, execution rail, timers, history UI
+- `components/layout/` — desktop shell layout
+- `electron/` — Electron main/preload/native desktop logic
+- `lib/` — prompt logic, persistence helpers, Supabase helpers
+- `supabase/` — SQL schema and backend setup
 
-## Notes
+## Current Product Direction
 
-- Set `OPEN_ELECTRON_DEVTOOLS=1` if you want devtools to open automatically in Electron.
-- The home page is the main app surface now. `/dashboard` just redirects back to `/`.
+The main product path from here is:
+
+1. make the execution rail the center of the work session
+2. persist timer + block progress more deeply
+3. add history browsing beyond the right rail
+4. add points / streaks / leaderboard on top of reliable completion data
+
+## Troubleshooting
+
+### Another dev server is already running
+
+If Verge says another Next dev server is already running, stop the old one first:
+
+```bash
+lsof -i :3000
+kill <PID>
+```
+
+### Supabase saves fail with permission errors
+
+Make sure you ran the full schema in `supabase/schema.sql`. Verge needs both:
+
+- row-level security policies
+- table grants for `authenticated`
+
+### The app opens but AI is in fallback mode
+
+That means your selected live provider is unavailable or no model key is configured.
+
+### The desktop app does not open
+
+The web app may still be running at:
+
+```text
+http://localhost:3000
+```
+
+If Electron does not appear, restart `npm run dev`.

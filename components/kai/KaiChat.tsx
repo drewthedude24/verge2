@@ -3,7 +3,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import ExecutionRail from "@/components/kai/ExecutionRail";
 import DesktopShell from "@/components/layout/DesktopShell";
-import { buildLocalExecutionPlan, saveExecutionPlan, updateExecutionBlockStatus } from "@/lib/plan-store";
+import {
+  buildExecutionPlanFromHistoryRun,
+  buildLocalExecutionPlan,
+  buildPlannerHistoryContext,
+  loadPlannerHistory,
+  saveExecutionPlan,
+  updateExecutionBlockStatus,
+  type PlannerHistoryRun,
+} from "@/lib/plan-store";
 import { createClient, isSupabaseConfigured } from "@/lib/supabase";
 import { type Message, useKai } from "@/components/kai/use-kai";
 
@@ -155,6 +163,13 @@ function buildTranscriptPreview(committedTranscript: string, interimTranscript: 
   return mergeTranscriptSnapshot(committed, interim);
 }
 
+function formatCountdown(totalSeconds: number) {
+  const safeSeconds = Math.max(0, totalSeconds);
+  const minutes = Math.floor(safeSeconds / 60);
+  const seconds = safeSeconds % 60;
+  return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+}
+
 function mapBrowserSpeechError(error: string) {
   switch (error) {
     case "not-allowed":
@@ -263,11 +278,19 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
   const [isListening, setIsListening] = useState(false);
   const [speechError, setSpeechError] = useState<string | null>(null);
   const [desktopDictationSupported, setDesktopDictationSupported] = useState(false);
+  const [plannerHistory, setPlannerHistory] = useState<PlannerHistoryRun[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [selectedHistoryRunId, setSelectedHistoryRunId] = useState<string | null>(null);
+  const [showHistoryPlan, setShowHistoryPlan] = useState(false);
   const [planStatusOverrides, setPlanStatusOverrides] = useState<Record<string, "pending" | "completed" | "skipped">>(
     {},
   );
   const [persistedPlanKey, setPersistedPlanKey] = useState<string | null>(null);
   const [persistErrorPlanKey, setPersistErrorPlanKey] = useState<string | null>(null);
+  const [persistedRunState, setPersistedRunState] = useState<{ planKey: string; runId: string } | null>(null);
+  const [timerRunning, setTimerRunning] = useState(false);
+  const [timerRemainingSeconds, setTimerRemainingSeconds] = useState(0);
+  const [timerBlockKey, setTimerBlockKey] = useState<string | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const recognitionRef = useRef<SpeechRecognition | null>(null);
@@ -279,14 +302,13 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
   const suppressNextDictationCommitRef = useRef(false);
   const restartDictationTimerRef = useRef<number | null>(null);
   const pushToTalkActiveRef = useRef(false);
-  const persistedRunRef = useRef<{ planKey: string; runId: string } | null>(null);
   const persistRequestPlanKeyRef = useRef<string | null>(null);
   const lastUserPromptRef = useRef("");
   const isDesktop = useSyncExternalStore(subscribeToDesktopBridge, getDesktopSnapshot, () => false);
   const browserSpeechSupported = useSyncExternalStore(subscribeToSpeechSupport, getSpeechSupportSnapshot, () => false);
   const speechSupported = isDesktop ? desktopDictationSupported : browserSpeechSupported;
   const generatedPlan = useMemo(() => buildLocalExecutionPlan(latestProfile), [latestProfile]);
-  const executionPlan = useMemo(() => {
+  const currentGeneratedPlan = useMemo(() => {
     if (!generatedPlan) {
       return null;
     }
@@ -299,6 +321,59 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
       })),
     };
   }, [generatedPlan, planStatusOverrides]);
+  const activeHistoryRun = useMemo(() => {
+    if (!plannerHistory.length) {
+      return null;
+    }
+
+    if (selectedHistoryRunId) {
+      return plannerHistory.find((run) => run.id === selectedHistoryRunId) || plannerHistory[0];
+    }
+
+    return plannerHistory[0];
+  }, [plannerHistory, selectedHistoryRunId]);
+  const historyPlan = useMemo(() => {
+    if (!activeHistoryRun) {
+      return null;
+    }
+
+    const basePlan = buildExecutionPlanFromHistoryRun(activeHistoryRun);
+    if (!basePlan) {
+      return null;
+    }
+
+    return {
+      ...basePlan,
+      blocks: basePlan.blocks.map((block) => ({
+        ...block,
+        status: planStatusOverrides[`${basePlan.plan_id}:${block.id}`] ?? block.status,
+      })),
+    };
+  }, [activeHistoryRun, planStatusOverrides]);
+  const activePlanSource =
+    showHistoryPlan && historyPlan
+      ? ("history" as const)
+      : currentGeneratedPlan
+        ? ("live" as const)
+        : historyPlan
+          ? ("history" as const)
+          : ("none" as const);
+  const executionPlan =
+    activePlanSource === "history" ? historyPlan : activePlanSource === "live" ? currentGeneratedPlan : null;
+  const activeProfile = activePlanSource === "history" ? activeHistoryRun?.rawProfile ?? latestProfile : latestProfile;
+  const currentBlock = executionPlan?.blocks.find((block) => block.status === "pending") ?? null;
+  const currentTimerKey = executionPlan && currentBlock ? `${executionPlan.plan_id}:${currentBlock.id}` : null;
+  const activeRunId =
+    activePlanSource === "history"
+      ? activeHistoryRun?.id ?? null
+      : currentGeneratedPlan && persistedRunState?.planKey === currentGeneratedPlan.plan_id
+        ? persistedRunState.runId
+        : null;
+  const activePlanKey = executionPlan?.plan_id ?? null;
+  const effectiveTimerRemainingSeconds =
+    currentTimerKey && timerBlockKey === currentTimerKey
+      ? timerRemainingSeconds
+      : Math.max(0, (currentBlock?.duration_minutes || 0) * 60);
   const storageState = useMemo(() => {
     if (!authConfigured) {
       return "disabled" as const;
@@ -318,6 +393,19 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
 
     return "saving" as const;
   }, [authConfigured, generatedPlan, persistErrorPlanKey, persistedPlanKey, supabase, viewer.id]);
+  const timerLabel = formatCountdown(effectiveTimerRemainingSeconds);
+  const timerProgressPercent = useMemo(() => {
+    if (!currentBlock?.duration_minutes) {
+      return 0;
+    }
+
+    const total = currentBlock.duration_minutes * 60;
+    if (total <= 0) {
+      return 0;
+    }
+
+    return (effectiveTimerRemainingSeconds / total) * 100;
+  }, [currentBlock, effectiveTimerRemainingSeconds]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -340,6 +428,116 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
     element.style.height = "auto";
     element.style.height = `${Math.min(element.scrollHeight, 160)}px`;
   }, [input]);
+
+  const refreshPlannerHistory = useCallback(async () => {
+    const viewerId = viewer.id;
+    if (!supabase || !viewerId) {
+      setPlannerHistory([]);
+      setSelectedHistoryRunId(null);
+      return;
+    }
+
+    setHistoryLoading(true);
+    try {
+      const runs = await loadPlannerHistory({
+        supabase,
+        userId: viewerId,
+      });
+      setPlannerHistory(runs);
+      setSelectedHistoryRunId((currentValue) => {
+        if (currentValue && runs.some((run) => run.id === currentValue)) {
+          return currentValue;
+        }
+
+        return runs[0]?.id ?? null;
+      });
+    } catch (error) {
+      console.error("[Verge] Failed to load planner history:", error);
+      setPlannerHistory([]);
+      setSelectedHistoryRunId(null);
+    } finally {
+      setHistoryLoading(false);
+    }
+  }, [supabase, viewer.id]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    if (!supabase || !viewer.id) {
+      const frame = window.requestAnimationFrame(() => {
+        setPlannerHistory([]);
+        setSelectedHistoryRunId(null);
+      });
+      return () => {
+        window.cancelAnimationFrame(frame);
+      };
+    }
+
+    const viewerId = viewer.id;
+
+    const frame = window.requestAnimationFrame(() => {
+      setHistoryLoading(true);
+      void loadPlannerHistory({
+        supabase,
+        userId: viewerId,
+      })
+        .then((runs) => {
+          if (cancelled) {
+            return;
+          }
+
+          setPlannerHistory(runs);
+          setSelectedHistoryRunId((currentValue) => {
+            if (currentValue && runs.some((run) => run.id === currentValue)) {
+              return currentValue;
+            }
+
+            return runs[0]?.id ?? null;
+          });
+        })
+        .catch((error) => {
+          if (cancelled) {
+            return;
+          }
+
+          console.error("[Verge] Failed to load planner history:", error);
+          setPlannerHistory([]);
+          setSelectedHistoryRunId(null);
+        })
+        .finally(() => {
+          if (!cancelled) {
+            setHistoryLoading(false);
+          }
+        });
+    });
+
+    return () => {
+      cancelled = true;
+      window.cancelAnimationFrame(frame);
+    };
+  }, [supabase, viewer.id]);
+
+  useEffect(() => {
+    if (!timerRunning || !currentTimerKey || timerBlockKey !== currentTimerKey) {
+      return;
+    }
+
+    const interval = window.setInterval(() => {
+      setTimerRemainingSeconds((currentValue) => {
+        if (currentValue <= 1) {
+          window.clearInterval(interval);
+          setTimerRunning(false);
+          return 0;
+        }
+
+        return currentValue - 1;
+      });
+    }, 1000);
+
+    return () => {
+      window.clearInterval(interval);
+    };
+  }, [currentTimerKey, timerBlockKey, timerRunning]);
 
   useEffect(() => {
     if (!isDesktop) {
@@ -673,12 +871,14 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
           return;
         }
 
-        persistedRunRef.current = {
+        setPersistedRunState({
           planKey: generatedPlan.plan_id,
           runId,
-        };
+        });
         setPersistedPlanKey(generatedPlan.plan_id);
         setPersistErrorPlanKey((currentValue) => (currentValue === generatedPlan.plan_id ? null : currentValue));
+        setSelectedHistoryRunId(runId);
+        void refreshPlannerHistory();
       })
       .catch((error) => {
         console.error("[Verge] Failed to save execution plan:", error);
@@ -690,35 +890,96 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
     return () => {
       cancelled = true;
     };
-  }, [generatedPlan, latestProfile, liveModelLabel, persistErrorPlanKey, persistedPlanKey, supabase, viewer.id]);
+  }, [
+    generatedPlan,
+    latestProfile,
+    liveModelLabel,
+    persistErrorPlanKey,
+    persistedPlanKey,
+    refreshPlannerHistory,
+    supabase,
+    viewer.id,
+  ]);
 
   const handleUpdateBlockStatus = useCallback(
     (blockId: string, status: "pending" | "completed" | "skipped") => {
-      if (!generatedPlan) {
+      if (!executionPlan || !activePlanKey) {
         return;
       }
 
       setPlanStatusOverrides((currentOverrides) => ({
         ...currentOverrides,
-        [`${generatedPlan.plan_id}:${blockId}`]: status,
+        [`${activePlanKey}:${blockId}`]: status,
       }));
 
-      if (!supabase || !persistedRunRef.current || persistedRunRef.current.planKey !== generatedPlan.plan_id) {
+      setPlannerHistory((currentRuns) =>
+        currentRuns.map((run) =>
+          run.id !== activeRunId
+            ? run
+            : {
+                ...run,
+                blocks: run.blocks.map((block) => (block.id === blockId ? { ...block, status } : block)),
+              },
+        ),
+      );
+
+      if (currentBlock?.id === blockId) {
+        setTimerRunning(false);
+      }
+
+      if (!supabase || !activeRunId) {
         return;
       }
 
       void updateExecutionBlockStatus({
         supabase,
-        runId: persistedRunRef.current.runId,
+        runId: activeRunId,
         blockId,
         status,
       }).catch((error) => {
         console.error("[Verge] Failed to update execution block:", error);
-        setPersistErrorPlanKey(generatedPlan.plan_id);
+        setPersistErrorPlanKey(activePlanKey);
       });
     },
-    [generatedPlan, supabase],
+    [activePlanKey, activeRunId, currentBlock?.id, executionPlan, supabase],
   );
+
+  const handleSelectHistoryRun = useCallback((runId: string) => {
+    setSelectedHistoryRunId(runId);
+    setShowHistoryPlan(true);
+    setTimerRunning(false);
+  }, []);
+
+  const handleReturnToLivePlan = useCallback(() => {
+    if (!currentGeneratedPlan) {
+      return;
+    }
+
+    setShowHistoryPlan(false);
+    setTimerRunning(false);
+  }, [currentGeneratedPlan]);
+
+  const handleStartTimer = useCallback(() => {
+    if (!currentBlock) {
+      return;
+    }
+
+    setTimerBlockKey(currentTimerKey);
+    if (!currentTimerKey || timerBlockKey !== currentTimerKey || timerRemainingSeconds <= 0) {
+      setTimerRemainingSeconds(Math.max(0, currentBlock.duration_minutes * 60));
+    }
+    setTimerRunning(true);
+  }, [currentBlock, currentTimerKey, timerBlockKey, timerRemainingSeconds]);
+
+  const handlePauseTimer = useCallback(() => {
+    setTimerRunning(false);
+  }, []);
+
+  const handleResetTimer = useCallback(() => {
+    setTimerRunning(false);
+    setTimerBlockKey(currentTimerKey);
+    setTimerRemainingSeconds(Math.max(0, (currentBlock?.duration_minutes || 0) * 60));
+  }, [currentBlock?.duration_minutes, currentTimerKey]);
 
   async function handleSend() {
     if (!input.trim() || isLoading) {
@@ -730,14 +991,20 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
     }
 
     const text = input.trim();
+    const historyContext = buildPlannerHistoryContext({
+      runs: plannerHistory,
+      userText: text,
+      selectedRunId: showHistoryPlan ? selectedHistoryRunId : null,
+    });
     lastUserPromptRef.current = text;
     setInput("");
     setHasStarted(true);
+    setShowHistoryPlan(false);
     setSpeechError(null);
     dictationBaseRef.current = "";
     dictatedTextRef.current = "";
     dictationInterimRef.current = "";
-    await sendMessage(text);
+    await sendMessage(text, { historyContext });
   }
 
   async function handleStarter(text: string) {
@@ -747,8 +1014,15 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
 
     lastUserPromptRef.current = text;
     setHasStarted(true);
+    setShowHistoryPlan(false);
     setSpeechError(null);
-    await sendMessage(text);
+    await sendMessage(text, {
+      historyContext: buildPlannerHistoryContext({
+        runs: plannerHistory,
+        userText: text,
+        selectedRunId: showHistoryPlan ? selectedHistoryRunId : null,
+      }),
+    });
   }
 
   function handleReset() {
@@ -763,12 +1037,16 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
     dictatedTextRef.current = "";
     dictationInterimRef.current = "";
     dictationBaseRef.current = "";
-    persistedRunRef.current = null;
     lastUserPromptRef.current = "";
     persistRequestPlanKeyRef.current = null;
     setPersistedPlanKey(null);
     setPersistErrorPlanKey(null);
+    setPersistedRunState(null);
     setPlanStatusOverrides({});
+    setShowHistoryPlan(false);
+    setTimerRunning(false);
+    setTimerRemainingSeconds(0);
+    setTimerBlockKey(null);
   }
 
   function handleKeyDown(event: React.KeyboardEvent<HTMLTextAreaElement>) {
@@ -788,6 +1066,18 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
     setSpeechError(null);
   }
 
+  const compactContent = currentBlock ? (
+    <div className="flex items-center gap-2 overflow-hidden">
+      <span className="rounded-full border border-orange-300/20 bg-orange-300/10 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-orange-100">
+        {activePlanSource === "history" ? "history" : "active"}
+      </span>
+      <p className="truncate text-xs text-white/72">{currentBlock.title}</p>
+      <span className="rounded-full border border-white/10 bg-white/6 px-2.5 py-1 text-[11px] font-semibold text-white/88">
+        {timerLabel}
+      </span>
+    </div>
+  ) : null;
+
   return (
     <DesktopShell
       badge={mode === "live" ? "Kai Live" : "Kai Preview"}
@@ -797,7 +1087,8 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
           ? "Talk through the week and Kai will shape a schedule inside the desktop shell."
           : "A live model provider is not configured, so Kai uses a safe fallback instead of breaking."
       }
-      contentClassName="grid min-h-0 flex-1 gap-0 lg:grid-cols-[minmax(0,1fr)_300px] xl:grid-cols-[minmax(0,1fr)_340px]"
+      compactContent={compactContent}
+      contentClassName="grid min-h-0 flex-1 gap-0 lg:grid-cols-[minmax(0,0.88fr)_360px] xl:grid-cols-[minmax(0,0.8fr)_430px]"
       actions={
         <>
           {hasStarted ? (
@@ -961,9 +1252,22 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
       <ExecutionRail
         liveModelLabel={liveModelLabel}
         plan={executionPlan}
-        profile={latestProfile}
+        profile={activeProfile}
         storageState={storageState}
+        historyRuns={plannerHistory}
+        selectedHistoryRunId={selectedHistoryRunId}
+        historyLoading={historyLoading}
+        timerLabel={timerLabel}
+        timerRunning={timerRunning}
+        timerProgressPercent={timerProgressPercent}
+        activeRunSource={activePlanSource}
         onUpdateBlockStatus={handleUpdateBlockStatus}
+        onStartTimer={handleStartTimer}
+        onPauseTimer={handlePauseTimer}
+        onResetTimer={handleResetTimer}
+        onSelectHistoryRun={handleSelectHistoryRun}
+        onReturnToLivePlan={handleReturnToLivePlan}
+        canReturnToLivePlan={Boolean(currentGeneratedPlan)}
       />
     </DesktopShell>
   );

@@ -12,6 +12,10 @@ export interface Message {
   isStreaming?: boolean;
 }
 
+type SendMessageOptions = {
+  historyContext?: string | null;
+};
+
 export function useKai() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -19,7 +23,7 @@ export function useKai() {
   const abortRef = useRef<AbortController | null>(null);
 
   const sendMessage = useCallback(
-    async (userText: string) => {
+    async (userText: string, options?: SendMessageOptions) => {
       if (!userText.trim() || isLoading) {
         return;
       }
@@ -34,6 +38,7 @@ export function useKai() {
       }));
       const recentHistory = history.filter((message) => message.content).slice(-6);
       const memory = latestProfile?.summary?.trim() || null;
+      const historyContext = options?.historyContext?.trim() || null;
 
       const userMessage: Message = {
         id: crypto.randomUUID(),
@@ -66,6 +71,7 @@ export function useKai() {
           body: JSON.stringify({
             messages: [...recentHistory, { role: "user", content: cleanedText }],
             memory,
+            historyContext,
           }),
           signal: abortRef.current.signal,
         });

@@ -36,6 +36,11 @@ type MutationResult = Promise<{
   error: SupabaseErrorLike | null;
 }>;
 
+type SelectResult<Row> = Promise<{
+  data: Row[] | null;
+  error: SupabaseErrorLike | null;
+}>;
+
 type PlannerRunsTable = {
   insert: (values: unknown) => {
     select: (columns: string) => {
@@ -56,6 +61,24 @@ type PlannerBlocksUpdateTable = {
   };
 };
 
+type PlannerRunsSelectTable<Row> = {
+  select: (columns: string) => {
+    eq: (column: string, value: string) => {
+      order: (column: string, options?: { ascending?: boolean }) => {
+        limit: (value: number) => SelectResult<Row>;
+      };
+    };
+  };
+};
+
+type PlannerBlocksSelectTable<Row> = {
+  select: (columns: string) => {
+    in: (column: string, values: string[]) => {
+      order: (column: string, options?: { ascending?: boolean }) => SelectResult<Row>;
+    };
+  };
+};
+
 function plannerRunsTable(supabase: BrowserSupabaseClient) {
   return supabase.from("planner_runs" as never) as unknown as PlannerRunsTable;
 }
@@ -66,6 +89,14 @@ function plannerBlocksInsertTable(supabase: BrowserSupabaseClient) {
 
 function plannerBlocksUpdateTable(supabase: BrowserSupabaseClient) {
   return supabase.from("planner_blocks" as never) as unknown as PlannerBlocksUpdateTable;
+}
+
+function plannerRunsSelectTable<Row>(supabase: BrowserSupabaseClient) {
+  return supabase.from("planner_runs" as never) as unknown as PlannerRunsSelectTable<Row>;
+}
+
+function plannerBlocksSelectTable<Row>(supabase: BrowserSupabaseClient) {
+  return supabase.from("planner_blocks" as never) as unknown as PlannerBlocksSelectTable<Row>;
 }
 
 function formatSupabaseError(table: string, operation: string, error: SupabaseErrorLike | null | undefined) {
@@ -110,6 +141,179 @@ function normalizeBlock(block: KaiExecutionBlock, index: number) {
       plan_id: block.id || `block_${index + 1}`,
     },
   };
+}
+
+type PlannerRunRow = {
+  id: string;
+  plan_key: string;
+  scope_label: string;
+  plan_status: string;
+  timezone: string | null;
+  focus_strategy: string | null;
+  plan_summary: string | null;
+  source_prompt: string | null;
+  provider_label: string | null;
+  raw_profile: KaiUserProfile | null;
+  created_at: string;
+};
+
+type PlannerBlockRow = {
+  run_id: string;
+  block_key: string;
+  position: number;
+  title: string;
+  kind: KaiExecutionBlock["kind"];
+  date_label: string | null;
+  start_time: string | null;
+  end_time: string | null;
+  duration_minutes: number | null;
+  focus_level: KaiExecutionBlock["focus_level"] | null;
+  energy_match: KaiExecutionBlock["energy_match"] | null;
+  status: KaiExecutionBlock["status"] | null;
+  can_skip: boolean | null;
+  source_goal: string | null;
+  notes: string | null;
+};
+
+export type PlannerHistoryRun = {
+  id: string;
+  planKey: string;
+  scopeLabel: string;
+  planStatus: string;
+  timezone: string | null;
+  focusStrategy: string | null;
+  planSummary: string | null;
+  sourcePrompt: string | null;
+  providerLabel: string | null;
+  createdAt: string;
+  rawProfile: KaiUserProfile | null;
+  blocks: KaiExecutionBlock[];
+};
+
+function normalizeStoredBlock(row: PlannerBlockRow): KaiExecutionBlock {
+  return {
+    id: row.block_key,
+    title: row.title,
+    kind: row.kind || "task",
+    date_label: row.date_label || "",
+    start_time: row.start_time || "",
+    end_time: row.end_time || "",
+    duration_minutes: row.duration_minutes ?? 0,
+    status: row.status || "pending",
+    focus_level: row.focus_level || "light",
+    energy_match: row.energy_match || "unknown",
+    can_skip: row.can_skip ?? true,
+    source_goal: row.source_goal || null,
+    notes: row.notes || null,
+  };
+}
+
+export async function loadPlannerHistory({
+  supabase,
+  userId,
+  limit = 8,
+}: {
+  supabase: BrowserSupabaseClient;
+  userId: string;
+  limit?: number;
+}): Promise<PlannerHistoryRun[]> {
+  const plannerRuns = plannerRunsSelectTable<PlannerRunRow>(supabase);
+  const plannerBlocks = plannerBlocksSelectTable<PlannerBlockRow>(supabase);
+
+  const { data: runRows, error: runError } = await plannerRuns
+    .select("id, plan_key, scope_label, plan_status, timezone, focus_strategy, plan_summary, source_prompt, provider_label, raw_profile, created_at")
+    .eq("user_id", userId)
+    .order("created_at", { ascending: false })
+    .limit(limit);
+
+  if (runError) {
+    throw new Error(formatSupabaseError("planner_runs", "select", runError));
+  }
+
+  if (!runRows?.length) {
+    return [];
+  }
+
+  const runIds = runRows.map((row) => row.id);
+  const { data: blockRows, error: blockError } = await plannerBlocks
+    .select("run_id, block_key, position, title, kind, date_label, start_time, end_time, duration_minutes, focus_level, energy_match, status, can_skip, source_goal, notes")
+    .in("run_id", runIds)
+    .order("position", { ascending: true });
+
+  if (blockError) {
+    throw new Error(formatSupabaseError("planner_blocks", "select", blockError));
+  }
+
+  const groupedBlocks = new Map<string, KaiExecutionBlock[]>();
+  for (const row of blockRows || []) {
+    const existing = groupedBlocks.get(row.run_id) || [];
+    existing.push(normalizeStoredBlock(row));
+    groupedBlocks.set(row.run_id, existing);
+  }
+
+  return runRows.map((row) => ({
+    id: row.id,
+    planKey: row.plan_key,
+    scopeLabel: row.scope_label,
+    planStatus: row.plan_status,
+    timezone: row.timezone,
+    focusStrategy: row.focus_strategy,
+    planSummary: row.plan_summary,
+    sourcePrompt: row.source_prompt,
+    providerLabel: row.provider_label,
+    createdAt: row.created_at,
+    rawProfile: row.raw_profile,
+    blocks: groupedBlocks.get(row.id) || [],
+  }));
+}
+
+function formatHistoryBlocksForPrompt(blocks: KaiExecutionBlock[]) {
+  return blocks
+    .slice(0, 8)
+    .map((block) => {
+      const timeLabel = [block.start_time, block.end_time].filter(Boolean).join("–");
+      return `${timeLabel || "time tbd"} ${block.title} [${block.kind}, ${block.status}]`;
+    })
+    .join("; ");
+}
+
+export function buildPlannerHistoryContext({
+  runs,
+  userText,
+  selectedRunId,
+}: {
+  runs: PlannerHistoryRun[];
+  userText: string;
+  selectedRunId?: string | null;
+}) {
+  const lower = userText.toLowerCase();
+  const explicitlyAskedForHistory = /\b(previous|past|before|earlier|last time|last schedule|old schedule|yesterday|history|what did you make)\b/.test(
+    lower,
+  );
+  const selectedRun = selectedRunId ? runs.find((run) => run.id === selectedRunId) : null;
+
+  if (!selectedRun && !explicitlyAskedForHistory) {
+    return null;
+  }
+
+  const chosenRuns = selectedRun ? [selectedRun] : runs.slice(0, 3);
+  if (!chosenRuns.length) {
+    return null;
+  }
+
+  return [
+    "Saved schedule history from Supabase:",
+    ...chosenRuns.map((run, index) => {
+      const summaryBits = [
+        `Run ${index + 1}: ${run.scopeLabel}`,
+        `created ${run.createdAt}`,
+        run.planSummary || "No summary",
+        `Blocks: ${formatHistoryBlocksForPrompt(run.blocks)}`,
+      ];
+
+      return summaryBits.join(" | ");
+    }),
+  ].join("\n");
 }
 
 export async function saveExecutionPlan({
@@ -196,6 +400,24 @@ export function buildLocalExecutionPlan(profile: KaiUserProfile | null): KaiExec
       can_skip: typeof block.can_skip === "boolean" ? block.can_skip : true,
       notes: block.notes || null,
       source_goal: block.source_goal || null,
+    })),
+  };
+}
+
+export function buildExecutionPlanFromHistoryRun(run: PlannerHistoryRun): KaiExecutionPlan | null {
+  if (!run.blocks.length) {
+    return null;
+  }
+
+  return {
+    plan_id: run.planKey,
+    scope_label: run.scopeLabel,
+    status: run.planStatus === "ready" ? "ready" : "draft",
+    timezone: run.timezone,
+    focus_strategy: run.focusStrategy || run.planSummary || "",
+    blocks: run.blocks.map((block) => ({
+      ...block,
+      id: block.id || crypto.randomUUID(),
     })),
   };
 }

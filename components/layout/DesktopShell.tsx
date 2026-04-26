@@ -10,6 +10,7 @@ type DesktopShellProps = {
   children: React.ReactNode;
   contentClassName?: string;
   actions?: React.ReactNode;
+  compactContent?: React.ReactNode;
 };
 
 type WindowState = {
@@ -48,6 +49,7 @@ export default function DesktopShell({
   children,
   contentClassName,
   actions,
+  compactContent,
 }: DesktopShellProps) {
   const isDesktop = useSyncExternalStore(subscribeToDesktopShell, getDesktopSnapshot, () => false);
   const [windowState, setWindowState] = useState<WindowState>({ alwaysOnTop: true, compact: false });
@@ -95,7 +97,7 @@ export default function DesktopShell({
     return (
       <main className="min-h-screen bg-transparent px-3 pt-3 text-white">
         <div
-          className="mx-auto flex max-w-[620px] items-center justify-between gap-4 rounded-full border border-white/12 bg-[#0b0e13]/30 px-4 py-3 shadow-[0_24px_80px_rgba(0,0,0,0.28)] backdrop-blur-3xl"
+          className="mx-auto flex max-w-[860px] items-center justify-between gap-4 rounded-full border border-white/12 bg-[#0b0e13]/30 px-4 py-3 shadow-[0_24px_80px_rgba(0,0,0,0.28)] backdrop-blur-3xl"
           style={dragRegionStyle}
         >
           <div className="min-w-0 flex-1">
@@ -112,6 +114,12 @@ export default function DesktopShell({
               </div>
             </div>
           </div>
+
+          {compactContent ? (
+            <div className="hidden min-w-0 flex-1 md:block" style={noDragRegionStyle}>
+              {compactContent}
+            </div>
+          ) : null}
 
           <div className="flex items-center gap-2" style={noDragRegionStyle}>
             <button

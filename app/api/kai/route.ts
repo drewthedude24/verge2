@@ -58,14 +58,18 @@ export async function GET() {
 
 export async function POST(request: NextRequest) {
   try {
-    const { messages, memory }: { messages?: Message[]; memory?: string | null } = await request.json();
+    const {
+      messages,
+      memory,
+      historyContext,
+    }: { messages?: Message[]; memory?: string | null; historyContext?: string | null } = await request.json();
 
     if (!Array.isArray(messages)) {
       return new Response("Invalid messages payload", { status: 400 });
     }
 
     const providers = getConfiguredProviders();
-    const text = await generateKaiReply(messages, memory, providers);
+    const text = await generateKaiReply(messages, memory, historyContext, providers);
     return streamText(text);
   } catch (error) {
     console.error("[Kai API] Error:", error);
@@ -73,13 +77,18 @@ export async function POST(request: NextRequest) {
   }
 }
 
-async function generateKaiReply(messages: Message[], memory: string | null | undefined, providers: ProviderConfig[]) {
+async function generateKaiReply(
+  messages: Message[],
+  memory: string | null | undefined,
+  historyContext: string | null | undefined,
+  providers: ProviderConfig[],
+) {
   if (!providers.length) {
     return buildFallbackReply(messages);
   }
 
-  const geminiContents = buildGeminiContents(messages, memory);
-  const promptMessages = buildOpenAICompatibleMessages(messages, memory);
+  const geminiContents = buildGeminiContents(messages, memory, historyContext);
+  const promptMessages = buildOpenAICompatibleMessages(messages, memory, historyContext);
   let lastError: Error | undefined;
   let lastProvider: ProviderConfig | null = null;
 
@@ -160,14 +169,22 @@ function createProviderConfig(providerName: string): ProviderConfig | null {
   }
 }
 
-function buildGeminiContents(messages: Message[], memory?: string | null) {
+function buildGeminiContents(messages: Message[], memory?: string | null, historyContext?: string | null) {
   const contents: GeminiContent[] = [];
   const trimmedMemory = memory?.trim().slice(0, MEMORY_CHAR_LIMIT) || "";
+  const trimmedHistory = historyContext?.trim().slice(0, 2400) || "";
 
   if (trimmedMemory) {
     contents.push({
       role: "user",
       parts: [{ text: `Known context from earlier in this session:\n${trimmedMemory}` }],
+    });
+  }
+
+  if (trimmedHistory) {
+    contents.push({
+      role: "user",
+      parts: [{ text: trimmedHistory }],
     });
   }
 
@@ -185,7 +202,7 @@ function buildGeminiContents(messages: Message[], memory?: string | null) {
   return contents;
 }
 
-function buildOpenAICompatibleMessages(messages: Message[], memory?: string | null) {
+function buildOpenAICompatibleMessages(messages: Message[], memory?: string | null, historyContext?: string | null) {
   const promptMessages: OpenAICompatibleMessage[] = [
     {
       role: "system",
@@ -194,10 +211,18 @@ function buildOpenAICompatibleMessages(messages: Message[], memory?: string | nu
   ];
 
   const trimmedMemory = memory?.trim().slice(0, MEMORY_CHAR_LIMIT) || "";
+  const trimmedHistory = historyContext?.trim().slice(0, 2400) || "";
   if (trimmedMemory) {
     promptMessages.push({
       role: "user",
       content: `Known context from earlier in this session:\n${trimmedMemory}`,
+    });
+  }
+
+  if (trimmedHistory) {
+    promptMessages.push({
+      role: "user",
+      content: trimmedHistory,
     });
   }
 
