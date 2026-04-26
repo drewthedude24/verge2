@@ -52,6 +52,34 @@ Verge is currently set up best for macOS development.
 
 If `localhost:3000` is already in use, stop the old process first and run `npm run dev` again.
 
+## Windows Setup
+
+Install these first:
+
+- [Git](https://git-scm.com/download/win)
+- [Node.js](https://nodejs.org/)
+
+Then open PowerShell, Command Prompt, or Git Bash and run:
+
+```bash
+git clone https://github.com/CodedMed/Verge.git
+cd Verge
+npm install
+npm run dev
+```
+
+If the Electron window does not open right away, open:
+
+```text
+http://localhost:3000
+```
+
+If you want a Windows desktop build later, use:
+
+```bash
+npm run dist:win
+```
+
 ## Main Scripts
 
 ```bash
