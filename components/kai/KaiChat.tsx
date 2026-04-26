@@ -32,6 +32,11 @@ interface KaiChatProps {
   onSignOut?: () => void | Promise<void>;
 }
 
+type TimerAlertState = {
+  blockKey: string;
+  title: string;
+};
+
 const STARTERS = [
   "Build my schedule from scratch",
   "I have a deadline coming up",
@@ -211,6 +216,53 @@ function mapDesktopDictationError(code?: string | null, message?: string | null)
   }
 }
 
+function playTimerCompleteChime() {
+  const AudioContextClass = window.AudioContext || (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+  if (!AudioContextClass) {
+    return;
+  }
+
+  const context = new AudioContextClass();
+  const oscillator = context.createOscillator();
+  const gain = context.createGain();
+  oscillator.type = "triangle";
+  oscillator.frequency.setValueAtTime(880, context.currentTime);
+  oscillator.frequency.exponentialRampToValueAtTime(660, context.currentTime + 0.35);
+  gain.gain.setValueAtTime(0.0001, context.currentTime);
+  gain.gain.exponentialRampToValueAtTime(0.08, context.currentTime + 0.03);
+  gain.gain.exponentialRampToValueAtTime(0.0001, context.currentTime + 0.45);
+  oscillator.connect(gain);
+  gain.connect(context.destination);
+  oscillator.start();
+  oscillator.stop(context.currentTime + 0.45);
+  window.setTimeout(() => {
+    void context.close();
+  }, 550);
+}
+
+async function notifyTimerComplete(title: string) {
+  playTimerCompleteChime();
+
+  if (typeof Notification === "undefined") {
+    return;
+  }
+
+  try {
+    if (Notification.permission === "default") {
+      await Notification.requestPermission();
+    }
+
+    if (Notification.permission === "granted") {
+      new Notification("Timer complete", {
+        body: `${title} is up. Review it, then complete or skip the block.`,
+        silent: false,
+      });
+    }
+  } catch {
+    // Ignore notification errors and keep the in-app banner path.
+  }
+}
+
 function subscribeToDesktopBridge() {
   return () => {};
 }
@@ -299,6 +351,7 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
   const [timerRemainingSeconds, setTimerRemainingSeconds] = useState(0);
   const [timerBlockKey, setTimerBlockKey] = useState<string | null>(null);
   const [blockElapsedSeconds, setBlockElapsedSeconds] = useState<Record<string, number>>({});
+  const [timerAlert, setTimerAlert] = useState<TimerAlertState | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const recognitionRef = useRef<SpeechRecognition | null>(null);
@@ -312,6 +365,7 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
   const pushToTalkActiveRef = useRef(false);
   const persistRequestPlanKeyRef = useRef<string | null>(null);
   const lastUserPromptRef = useRef("");
+  const alertedTimerBlockKeyRef = useRef<string | null>(null);
   const isDesktop = useSyncExternalStore(subscribeToDesktopBridge, getDesktopSnapshot, () => false);
   const browserSpeechSupported = useSyncExternalStore(subscribeToSpeechSupport, getSpeechSupportSnapshot, () => false);
   const speechSupported = isDesktop ? desktopDictationSupported : browserSpeechSupported;
@@ -664,10 +718,10 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
     }
 
     const interval = window.setInterval(() => {
+      let didFinish = false;
       setTimerRemainingSeconds((currentValue) => {
         if (currentValue <= 1) {
-          window.clearInterval(interval);
-          setTimerRunning(false);
+          didFinish = true;
           return 0;
         }
 
@@ -681,12 +735,25 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
           [currentTimerKey]: Math.min(maxDurationSeconds, existing + 1),
         };
       });
+
+      if (didFinish) {
+        window.clearInterval(interval);
+        setTimerRunning(false);
+        if (alertedTimerBlockKeyRef.current !== currentTimerKey) {
+          alertedTimerBlockKeyRef.current = currentTimerKey;
+          setTimerAlert({
+            blockKey: currentTimerKey,
+            title: currentBlock?.title || "Current task",
+          });
+          void notifyTimerComplete(currentBlock?.title || "Current task");
+        }
+      }
     }, 1000);
 
     return () => {
       window.clearInterval(interval);
     };
-  }, [currentBlock?.duration_minutes, currentTimerKey, timerBlockKey, timerRunning]);
+  }, [currentBlock?.duration_minutes, currentBlock?.title, currentTimerKey, timerBlockKey, timerRunning]);
 
   useEffect(() => {
     if (!isDesktop) {
@@ -1073,6 +1140,11 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
 
       if (currentBlock?.id === blockId) {
         setTimerRunning(false);
+        if (activePlanKey) {
+          const currentBlockKey = `${activePlanKey}:${blockId}`;
+          setTimerAlert((currentValue) => (currentValue?.blockKey === currentBlockKey ? null : currentValue));
+          alertedTimerBlockKeyRef.current = null;
+        }
       }
 
       const blockKey = activePlanKey ? `${activePlanKey}:${blockId}` : null;
@@ -1216,6 +1288,10 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
       return;
     }
 
+    if (currentTimerKey) {
+      setTimerAlert((currentValue) => (currentValue?.blockKey === currentTimerKey ? null : currentValue));
+      alertedTimerBlockKeyRef.current = null;
+    }
     setTimerBlockKey(currentTimerKey);
     const durationSeconds = Math.max(0, currentBlock.duration_minutes * 60);
     const trackedElapsed = currentTimerKey ? Math.max(0, blockElapsedSeconds[currentTimerKey] || 0) : 0;
@@ -1237,6 +1313,8 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
     }
 
     setTimerRunning(false);
+    setTimerAlert((currentValue) => (currentValue?.blockKey === currentTimerKey ? null : currentValue));
+    alertedTimerBlockKeyRef.current = null;
     setTimerBlockKey(currentTimerKey);
     setTimerRemainingSeconds(Math.max(0, (currentBlock?.duration_minutes || 0) * 60));
     setBlockElapsedSeconds((currentValue) => ({
@@ -1274,6 +1352,7 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
     setInput("");
     setHasStarted(true);
     setShowHistoryPlan(false);
+    setTimerAlert(null);
     setSpeechError(null);
     dictationBaseRef.current = "";
     dictatedTextRef.current = "";
@@ -1289,6 +1368,7 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
     lastUserPromptRef.current = text;
     setHasStarted(true);
     setShowHistoryPlan(false);
+    setTimerAlert(null);
     setSpeechError(null);
     await sendMessage(text, {
       historyContext: buildPlannerHistoryContext({
@@ -1326,6 +1406,8 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
     setTimerRemainingSeconds(0);
     setTimerBlockKey(null);
     setBlockElapsedSeconds({});
+    setTimerAlert(null);
+    alertedTimerBlockKeyRef.current = null;
   }
 
   function handleKeyDown(event: React.KeyboardEvent<HTMLTextAreaElement>) {
@@ -1443,6 +1525,23 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
         </div>
 
         <main className="min-h-0 flex-1 overflow-y-auto py-4" style={{ scrollbarWidth: "thin" }}>
+          {timerAlert ? (
+            <div className="px-4 pb-3 md:px-6">
+              <div className="flex items-center justify-between gap-3 rounded-[22px] border border-orange-300/20 bg-orange-300/10 px-4 py-3 text-left">
+                <div>
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-orange-100/80">Timer complete</p>
+                  <p className="mt-1 text-sm font-medium text-white">{timerAlert.title} is ready for review.</p>
+                </div>
+                <button
+                  onClick={() => setTimerAlert(null)}
+                  className="rounded-full border border-white/10 bg-white/8 px-3 py-1.5 text-[11px] text-white/80 transition hover:border-white/20 hover:bg-white/12 hover:text-white"
+                  type="button"
+                >
+                  Dismiss
+                </button>
+              </div>
+            </div>
+          ) : null}
           {!hasStarted ? (
             <div className="flex h-full flex-col items-center justify-center gap-10 px-6 pb-16 text-center">
               <div className="space-y-4">
