@@ -56,24 +56,38 @@ export function getBlockTargetPoints(block: KaiExecutionBlock) {
     return 0;
   }
 
-  if (typeof block.point_value === "number" && Number.isFinite(block.point_value) && block.point_value > 0) {
-    return Math.round(block.point_value);
-  }
-
   const priorityBand = getBlockPriorityBand(block);
+  const durationMinutes = Math.max(0, block.duration_minutes || 0);
+  const durationFactor = durationMinutes >= 60 ? 1 : durationMinutes > 0 ? durationMinutes / 60 : 0;
+  let basePoints = 0;
 
-  if (block.kind === "workout") {
-    return 5;
+  if (typeof block.point_value === "number" && Number.isFinite(block.point_value) && block.point_value > 0) {
+    basePoints = Math.round(block.point_value);
+  } else if (block.kind === "workout") {
+    basePoints = 5;
+  } else {
+    switch (priorityBand) {
+      case "high":
+        basePoints = 10;
+        break;
+      case "medium":
+        basePoints = 7;
+        break;
+      case "low":
+        basePoints = 4;
+        break;
+    }
   }
 
-  switch (priorityBand) {
-    case "high":
-      return 10;
-    case "medium":
-      return 7;
-    case "low":
-      return 4;
+  if (durationMinutes <= 0) {
+    return basePoints;
   }
+
+  if (durationMinutes < 60) {
+    return Math.max(1, Math.round(basePoints * durationFactor));
+  }
+
+  return basePoints;
 }
 
 export function formatTrackedDuration(totalSeconds: number) {
