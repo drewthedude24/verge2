@@ -61,7 +61,6 @@ export function getBlockTargetPoints(block: KaiExecutionBlock) {
 
   const priorityBand = getBlockPriorityBand(block);
   const durationMinutes = Math.max(0, block.duration_minutes || 0);
-  const durationFactor = durationMinutes >= 60 ? 1 : durationMinutes > 0 ? durationMinutes / 60 : 0;
   let basePoints = 0;
 
   if (typeof block.point_value === "number" && Number.isFinite(block.point_value) && block.point_value > 0) {
@@ -71,7 +70,7 @@ export function getBlockTargetPoints(block: KaiExecutionBlock) {
   } else {
     switch (priorityBand) {
       case "high":
-        basePoints = 10;
+        basePoints = 12;
         break;
       case "medium":
         basePoints = 7;
@@ -86,11 +85,10 @@ export function getBlockTargetPoints(block: KaiExecutionBlock) {
     return basePoints;
   }
 
-  if (durationMinutes < 60) {
-    return Math.max(1, Math.round(basePoints * durationFactor));
-  }
+  const scaledDurationMinutes = Math.min(180, Math.max(5, durationMinutes));
+  const durationFactor = scaledDurationMinutes / 60;
 
-  return basePoints;
+  return Math.max(1, Math.round(basePoints * durationFactor));
 }
 
 export function formatTrackedDuration(totalSeconds: number) {
