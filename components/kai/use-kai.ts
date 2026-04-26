@@ -2,6 +2,7 @@
 
 import { useCallback, useRef, useState } from "react";
 import { parseKaiResponse, type KaiUserProfile } from "@/lib/kai-prompt";
+import { buildKaiApiUrl } from "@/lib/kai-api";
 
 export interface Message {
   id: string;
@@ -63,7 +64,7 @@ export function useKai() {
       setIsLoading(true);
 
       try {
-        const response = await fetch("/api/kai", {
+        const response = await fetch(buildKaiApiUrl("/api/kai"), {
           method: "POST",
           headers: {
             "Content-Type": "application/json",

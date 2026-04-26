@@ -49,6 +49,27 @@ Important:
 - Do not paste private API keys into the repo, README, or public releases.
 - If you want strangers to use live AI in production, host Verge with server-side environment variables instead of shipping your private key inside the app.
 
+### Production-safe downloadable app setup
+
+If you want strangers to download Verge and use live AI without ever seeing your provider key:
+
+1. Deploy Verge's backend somewhere public, like Vercel.
+2. Put your private provider keys on that server only.
+3. Put the public backend URL into the downloadable app with:
+
+```bash
+NEXT_PUBLIC_KAI_API_BASE_URL=https://your-verge-backend.vercel.app
+```
+
+4. Leave the local provider key lines blank in the downloadable app build.
+
+In that setup:
+
+- the app keeps only a public backend URL
+- the backend keeps the real model keys
+- users do not need local model keys
+- users do not get access to `.env.local`
+
 ### 3. Start the desktop app
 
 ```bash
@@ -174,6 +195,46 @@ For a real public launch, the correct setup is:
 - deploy Verge with server-side env vars
 - keep secrets on the server
 - let the desktop/web client talk to your backend
+
+### Hosted backend mode
+
+Verge now supports a hosted Kai backend directly.
+
+If `NEXT_PUBLIC_KAI_API_BASE_URL` is set, the app sends Kai requests to:
+
+```bash
+https://your-backend.example.com/api/kai
+```
+
+instead of requiring the model provider keys locally.
+
+That means a downloadable Verge build can work with:
+
+```bash
+NEXT_PUBLIC_KAI_API_BASE_URL=https://your-verge-backend.vercel.app
+NEXT_PUBLIC_SUPABASE_URL=...
+NEXT_PUBLIC_SUPABASE_ANON_KEY=...
+```
+
+and no local `GEMINI_API_KEY`, `CEREBRAS_API_KEY`, `OPENROUTER_API_KEY`, or `GROQ_API_KEY`.
+
+### Deploying the backend
+
+The easiest production path is:
+
+1. create a Vercel project from this repo
+2. add server environment variables in Vercel:
+   - `LLM_PROVIDER`
+   - one or more provider keys like `CEREBRAS_API_KEY`
+   - optional `KAI_CORS_ALLOW_ORIGIN`
+3. deploy
+4. copy the deployment URL into:
+
+```bash
+NEXT_PUBLIC_KAI_API_BASE_URL=https://your-verge-backend.vercel.app
+```
+
+The `/api/kai` route now supports cross-origin requests, so the desktop app can call a hosted Verge backend safely without exposing the provider key.
 
 ## How Verge stores plans
 

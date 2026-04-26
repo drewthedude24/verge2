@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import type { User } from "@supabase/supabase-js";
 import SignIn from "@/components/auth/SignIn";
 import KaiChat, { type ChatViewer } from "@/components/kai/KaiChat";
+import { buildKaiApiUrl } from "@/lib/kai-api";
 import { createClient, isSupabaseConfigured } from "@/lib/supabase";
 
 type KaiStatus = {
@@ -26,7 +27,7 @@ export default function RootPage() {
   useEffect(() => {
     let cancelled = false;
 
-    fetch("/api/kai", { method: "GET", cache: "no-store" })
+    fetch(buildKaiApiUrl("/api/kai"), { method: "GET", cache: "no-store" })
       .then(async (response) => {
         if (!response.ok) {
           throw new Error("Failed to load Kai status");

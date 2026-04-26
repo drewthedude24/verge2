@@ -45,15 +45,36 @@ const CEREBRAS_API_KEY = process.env.CEREBRAS_API_KEY?.trim() || "";
 const CEREBRAS_MODEL = process.env.CEREBRAS_MODEL?.trim() || "qwen-3-235b-a22b-instruct-2507";
 
 const LLM_PROVIDER = process.env.LLM_PROVIDER?.trim().toLowerCase() || "auto";
+const CORS_ALLOW_ORIGIN = process.env.KAI_CORS_ALLOW_ORIGIN?.trim() || "*";
+
+function buildCorsHeaders() {
+  return {
+    "Access-Control-Allow-Origin": CORS_ALLOW_ORIGIN,
+    "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type, Authorization",
+  };
+}
+
+export async function OPTIONS() {
+  return new Response(null, {
+    status: 204,
+    headers: buildCorsHeaders(),
+  });
+}
 
 export async function GET() {
   const provider = getConfiguredProviders()[0] ?? null;
 
-  return Response.json({
-    liveModelConfigured: Boolean(provider),
-    provider: provider?.provider ?? null,
-    model: provider?.model ?? null,
-  });
+  return Response.json(
+    {
+      liveModelConfigured: Boolean(provider),
+      provider: provider?.provider ?? null,
+      model: provider?.model ?? null,
+    },
+    {
+      headers: buildCorsHeaders(),
+    },
+  );
 }
 
 export async function POST(request: NextRequest) {
@@ -65,7 +86,10 @@ export async function POST(request: NextRequest) {
     }: { messages?: Message[]; memory?: string | null; historyContext?: string | null } = await request.json();
 
     if (!Array.isArray(messages)) {
-      return new Response("Invalid messages payload", { status: 400 });
+      return new Response("Invalid messages payload", {
+        status: 400,
+        headers: buildCorsHeaders(),
+      });
     }
 
     const providers = getConfiguredProviders();
@@ -287,6 +311,7 @@ function streamText(text: string) {
       "Content-Type": "text/event-stream",
       "Cache-Control": "no-cache, no-transform",
       Connection: "keep-alive",
+      ...buildCorsHeaders(),
     },
   });
 }
