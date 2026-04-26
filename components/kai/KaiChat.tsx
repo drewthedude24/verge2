@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import ExecutionRail from "@/components/kai/ExecutionRail";
 import DesktopShell from "@/components/layout/DesktopShell";
+import type { KaiExecutionBlock } from "@/lib/kai-prompt";
 import {
   buildExecutionPlanFromHistoryRun,
   buildLocalExecutionPlan,
@@ -12,7 +13,7 @@ import {
   updateExecutionBlockStatus,
   type PlannerHistoryRun,
 } from "@/lib/plan-store";
-import { buildScoreboardSummary } from "@/lib/scoreboard";
+import { buildAccountScoreboard, buildScoreboardSummary } from "@/lib/scoreboard";
 import { createClient, isSupabaseConfigured } from "@/lib/supabase";
 import { type Message, useKai } from "@/components/kai/use-kai";
 
@@ -286,6 +287,9 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
   const [planStatusOverrides, setPlanStatusOverrides] = useState<Record<string, "pending" | "completed" | "skipped">>(
     {},
   );
+  const [planProgressOverrides, setPlanProgressOverrides] = useState<
+    Record<string, { trackedElapsedSeconds: number; earnedPoints: number }>
+  >({});
   const [persistedPlanKey, setPersistedPlanKey] = useState<string | null>(null);
   const [persistErrorPlanKey, setPersistErrorPlanKey] = useState<string | null>(null);
   const [persistedRunState, setPersistedRunState] = useState<{ planKey: string; runId: string } | null>(null);
@@ -319,10 +323,16 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
       ...generatedPlan,
       blocks: generatedPlan.blocks.map((block) => ({
         ...block,
+        ...(planProgressOverrides[`${generatedPlan.plan_id}:${block.id}`]
+          ? {
+              tracked_elapsed_seconds: planProgressOverrides[`${generatedPlan.plan_id}:${block.id}`].trackedElapsedSeconds,
+              earned_points: planProgressOverrides[`${generatedPlan.plan_id}:${block.id}`].earnedPoints,
+            }
+          : {}),
         status: planStatusOverrides[`${generatedPlan.plan_id}:${block.id}`] ?? block.status,
       })),
     };
-  }, [generatedPlan, planStatusOverrides]);
+  }, [generatedPlan, planProgressOverrides, planStatusOverrides]);
   const activeHistoryRun = useMemo(() => {
     if (!plannerHistory.length || !selectedHistoryRunId) {
       return null;
@@ -344,10 +354,16 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
       ...basePlan,
       blocks: basePlan.blocks.map((block) => ({
         ...block,
+        ...(planProgressOverrides[`${basePlan.plan_id}:${block.id}`]
+          ? {
+              tracked_elapsed_seconds: planProgressOverrides[`${basePlan.plan_id}:${block.id}`].trackedElapsedSeconds,
+              earned_points: planProgressOverrides[`${basePlan.plan_id}:${block.id}`].earnedPoints,
+            }
+          : {}),
         status: planStatusOverrides[`${basePlan.plan_id}:${block.id}`] ?? block.status,
       })),
     };
-  }, [activeHistoryRun, planStatusOverrides]);
+  }, [activeHistoryRun, planProgressOverrides, planStatusOverrides]);
   const activePlanSource =
     showHistoryPlan && historyPlan
       ? ("history" as const)
@@ -414,6 +430,17 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
       }),
     [blockElapsedSeconds, currentTimerKey, executionPlan],
   );
+  const accountScoreboard = useMemo(
+    () =>
+      buildAccountScoreboard({
+        historyRuns: plannerHistory,
+        activePlan: executionPlan,
+        activeRunId,
+        elapsedSecondsByBlock: blockElapsedSeconds,
+        currentBlockKey: currentTimerKey,
+      }),
+    [activeRunId, blockElapsedSeconds, currentTimerKey, executionPlan, plannerHistory],
+  );
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -463,6 +490,118 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
       setHistoryLoading(false);
     }
   }, [supabase, viewer.id]);
+
+  const applyLocalBlockProgress = useCallback(
+    ({
+      planKey,
+      runId,
+      blockId,
+      status,
+      elapsedSeconds,
+      earnedPoints,
+    }: {
+      planKey: string;
+      runId: string | null;
+      blockId: string;
+      status?: "pending" | "completed" | "skipped";
+      elapsedSeconds: number;
+      earnedPoints: number;
+    }) => {
+      const normalizedElapsed = Math.max(0, Math.floor(elapsedSeconds));
+      const normalizedPoints = Math.max(0, Math.floor(earnedPoints));
+
+      setPlanProgressOverrides((currentValue) => ({
+        ...currentValue,
+        [`${planKey}:${blockId}`]: {
+          trackedElapsedSeconds: normalizedElapsed,
+          earnedPoints: normalizedPoints,
+        },
+      }));
+
+      if (!runId) {
+        return;
+      }
+
+      setPlannerHistory((currentRuns) =>
+        currentRuns.map((run) =>
+          run.id !== runId
+            ? run
+            : {
+                ...run,
+                blocks: run.blocks.map((block) =>
+                  block.id !== blockId
+                    ? block
+                    : {
+                        ...block,
+                        ...(status ? { status } : {}),
+                        tracked_elapsed_seconds: normalizedElapsed,
+                        earned_points: normalizedPoints,
+                      },
+                ),
+              },
+        ),
+      );
+    },
+    [],
+  );
+
+  const persistBlockProgress = useCallback(
+    async ({
+      runId,
+      planKey,
+      block,
+      status,
+      elapsedSeconds,
+      earnedPoints,
+      syncLocal = true,
+      reportErrors = true,
+    }: {
+      runId: string | null;
+      planKey: string;
+      block: KaiExecutionBlock;
+      status: "pending" | "completed" | "skipped";
+      elapsedSeconds: number;
+      earnedPoints: number;
+      syncLocal?: boolean;
+      reportErrors?: boolean;
+    }) => {
+      if (syncLocal) {
+        applyLocalBlockProgress({
+          planKey,
+          runId,
+          blockId: block.id,
+          status,
+          elapsedSeconds,
+          earnedPoints,
+        });
+      }
+
+      if (!supabase || !runId) {
+        return;
+      }
+
+      try {
+        await updateExecutionBlockStatus({
+          supabase,
+          runId,
+          blockId: block.id,
+          status,
+          elapsedSeconds,
+          earnedPoints,
+          pointValue: block.point_value ?? null,
+          priorityBand: block.priority_band ?? null,
+        });
+      } catch (error) {
+        if (reportErrors) {
+          console.error("[Verge] Failed to update execution block:", error);
+          setPersistErrorPlanKey(planKey);
+        } else {
+          console.error("[Verge] Failed to persist live progress:", error);
+        }
+      }
+    },
+    [applyLocalBlockProgress, supabase],
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -935,31 +1074,79 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
       }
 
       const blockKey = activePlanKey ? `${activePlanKey}:${blockId}` : null;
-      if (blockKey && status === "completed") {
-        const targetBlock = executionPlan.blocks.find((block) => block.id === blockId);
-        const durationSeconds = Math.max(0, (targetBlock?.duration_minutes || 0) * 60);
-        setBlockElapsedSeconds((currentValue) => ({
-          ...currentValue,
-          [blockKey]: durationSeconds,
-        }));
-      }
-
-      if (!supabase || !activeRunId) {
+      const targetBlock = executionPlan.blocks.find((block) => block.id === blockId);
+      const trackedElapsed = blockKey
+        ? Math.max(
+            0,
+            blockElapsedSeconds[blockKey] ??
+              targetBlock?.tracked_elapsed_seconds ??
+              0,
+          )
+        : 0;
+      const earnedEntry = blockKey ? scoreboard.entries.find((entry) => entry.blockKey === blockKey) : null;
+      if (!targetBlock) {
         return;
       }
 
-      void updateExecutionBlockStatus({
-        supabase,
+      void persistBlockProgress({
         runId: activeRunId,
-        blockId,
+        planKey: activePlanKey,
+        block: targetBlock,
         status,
-      }).catch((error) => {
-        console.error("[Verge] Failed to update execution block:", error);
-        setPersistErrorPlanKey(activePlanKey);
+        elapsedSeconds: trackedElapsed,
+        earnedPoints: earnedEntry?.earnedPoints || 0,
       });
     },
-    [activePlanKey, activeRunId, currentBlock?.id, executionPlan, supabase],
+    [
+      activePlanKey,
+      activeRunId,
+      blockElapsedSeconds,
+      currentBlock?.id,
+      executionPlan,
+      persistBlockProgress,
+      scoreboard.entries,
+    ],
   );
+
+  const persistLiveProgress = useCallback(async () => {
+    if (!supabase || !activeRunId || !currentBlock || !activePlanKey) {
+      return;
+    }
+
+    const blockKey = `${activePlanKey}:${currentBlock.id}`;
+    const trackedElapsed = Math.max(0, blockElapsedSeconds[blockKey] || 0);
+    const earnedEntry = scoreboard.entries.find((entry) => entry.blockKey === blockKey);
+
+    await persistBlockProgress({
+      runId: activeRunId,
+      planKey: activePlanKey,
+      block: currentBlock,
+      status: currentBlock.status,
+      elapsedSeconds: trackedElapsed,
+      earnedPoints: earnedEntry?.earnedPoints || 0,
+      syncLocal: false,
+      reportErrors: false,
+    });
+  }, [activePlanKey, activeRunId, blockElapsedSeconds, currentBlock, persistBlockProgress, scoreboard.entries, supabase]);
+
+  useEffect(() => {
+    if (!timerRunning || !currentTimerKey) {
+      return;
+    }
+
+    const trackedElapsed = blockElapsedSeconds[currentTimerKey] || 0;
+    if (!trackedElapsed || trackedElapsed % 15 !== 0) {
+      return;
+    }
+
+    const timeout = window.setTimeout(() => {
+      void persistLiveProgress();
+    }, 0);
+
+    return () => {
+      window.clearTimeout(timeout);
+    };
+  }, [blockElapsedSeconds, currentTimerKey, persistLiveProgress, timerRunning]);
 
   const handleSelectHistoryRun = useCallback((runId: string) => {
     setSelectedHistoryRunId(runId);
@@ -992,19 +1179,33 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
 
   const handlePauseTimer = useCallback(() => {
     setTimerRunning(false);
-  }, []);
+    void persistLiveProgress();
+  }, [persistLiveProgress]);
 
   const handleResetTimer = useCallback(() => {
+    if (!currentBlock || !currentTimerKey || !activePlanKey) {
+      setTimerRunning(false);
+      return;
+    }
+
     setTimerRunning(false);
     setTimerBlockKey(currentTimerKey);
     setTimerRemainingSeconds(Math.max(0, (currentBlock?.duration_minutes || 0) * 60));
-    if (currentTimerKey) {
-      setBlockElapsedSeconds((currentValue) => ({
-        ...currentValue,
-        [currentTimerKey]: 0,
-      }));
-    }
-  }, [currentBlock?.duration_minutes, currentTimerKey]);
+    setBlockElapsedSeconds((currentValue) => ({
+      ...currentValue,
+      [currentTimerKey]: 0,
+    }));
+
+    void persistBlockProgress({
+      runId: activeRunId,
+      planKey: activePlanKey,
+      block: currentBlock,
+      status: currentBlock.status,
+      elapsedSeconds: 0,
+      earnedPoints: 0,
+      reportErrors: false,
+    });
+  }, [activePlanKey, activeRunId, currentBlock, currentTimerKey, persistBlockProgress]);
 
   async function handleSend() {
     if (!input.trim() || isLoading) {
@@ -1050,10 +1251,12 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
     });
   }
 
-  function handleReset() {
+  async function handleReset() {
     if (isListening) {
       stopListening({ preserveDraft: false });
     }
+
+    await persistLiveProgress();
 
     resetConversation();
     setHasStarted(false);
@@ -1068,6 +1271,7 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
     setPersistErrorPlanKey(null);
     setPersistedRunState(null);
     setPlanStatusOverrides({});
+    setPlanProgressOverrides({});
     setSelectedHistoryRunId(null);
     setShowHistoryPlan(false);
     setTimerRunning(false);
@@ -1106,12 +1310,12 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
         {timerLabel}
       </span>
     </div>
-  ) : scoreboard.totalEarnedPoints > 0 ? (
+  ) : accountScoreboard.totalEarnedPoints > 0 ? (
     <div className="flex min-w-0 items-center gap-2 overflow-hidden">
       <span className="rounded-full border border-emerald-300/20 bg-emerald-300/10 px-2 py-1 text-[9px] font-semibold uppercase tracking-[0.16em] text-emerald-100">
-        {scoreboard.totalEarnedPoints} pts
+        {accountScoreboard.totalEarnedPoints} pts
       </span>
-      <p className="truncate text-[11px] text-white/72">Session total earned so far</p>
+      <p className="truncate text-[11px] text-white/72">Account points saved so far</p>
     </div>
   ) : null;
 
@@ -1306,7 +1510,7 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
         onReturnToLivePlan={handleReturnToLivePlan}
         canReturnToLivePlan={Boolean(currentGeneratedPlan)}
         leaderboardName={viewer.isGuest ? "You" : viewer.name}
-        scoreboard={scoreboard}
+        scoreboard={accountScoreboard}
       />
     </DesktopShell>
   );

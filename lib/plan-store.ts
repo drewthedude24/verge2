@@ -18,6 +18,10 @@ type UpdateExecutionBlockStatusInput = {
   runId: string;
   blockId: string;
   status: KaiExecutionBlock["status"];
+  elapsedSeconds?: number;
+  earnedPoints?: number;
+  pointValue?: number | null;
+  priorityBand?: "low" | "medium" | "high" | null;
 };
 
 type SupabaseErrorLike = {
@@ -141,6 +145,8 @@ function normalizeBlock(block: KaiExecutionBlock, index: number) {
       plan_id: block.id || `block_${index + 1}`,
       point_value: block.point_value ?? null,
       priority_band: block.priority_band ?? null,
+      tracked_elapsed_seconds: block.tracked_elapsed_seconds ?? null,
+      earned_points: block.earned_points ?? null,
     },
   };
 }
@@ -178,6 +184,8 @@ type PlannerBlockRow = {
   metadata?: {
     point_value?: number | null;
     priority_band?: "low" | "medium" | "high" | null;
+    tracked_elapsed_seconds?: number | null;
+    earned_points?: number | null;
   } | null;
 };
 
@@ -210,6 +218,8 @@ function normalizeStoredBlock(row: PlannerBlockRow): KaiExecutionBlock {
     energy_match: row.energy_match || "unknown",
     point_value: row.metadata?.point_value ?? null,
     priority_band: row.metadata?.priority_band ?? null,
+    tracked_elapsed_seconds: row.metadata?.tracked_elapsed_seconds ?? null,
+    earned_points: row.metadata?.earned_points ?? null,
     can_skip: row.can_skip ?? true,
     source_goal: row.source_goal || null,
     notes: row.notes || null,
@@ -219,7 +229,7 @@ function normalizeStoredBlock(row: PlannerBlockRow): KaiExecutionBlock {
 export async function loadPlannerHistory({
   supabase,
   userId,
-  limit = 8,
+  limit = 50,
 }: {
   supabase: BrowserSupabaseClient;
   userId: string;
@@ -381,11 +391,24 @@ export async function updateExecutionBlockStatus({
   runId,
   blockId,
   status,
+  elapsedSeconds,
+  earnedPoints,
+  pointValue,
+  priorityBand,
 }: UpdateExecutionBlockStatusInput) {
   const plannerBlocks = plannerBlocksUpdateTable(supabase);
 
   const { error } = await plannerBlocks
-    .update({ status })
+    .update({
+      status,
+      metadata: {
+        plan_id: blockId,
+        point_value: pointValue ?? null,
+        priority_band: priorityBand ?? null,
+        tracked_elapsed_seconds: typeof elapsedSeconds === "number" ? elapsedSeconds : null,
+        earned_points: typeof earnedPoints === "number" ? earnedPoints : null,
+      },
+    })
     .eq("run_id", runId)
     .eq("block_key", blockId);
 
@@ -407,6 +430,8 @@ export function buildLocalExecutionPlan(profile: KaiUserProfile | null): KaiExec
       status: block.status || "pending",
       point_value: typeof block.point_value === "number" ? block.point_value : null,
       priority_band: block.priority_band || null,
+      tracked_elapsed_seconds: typeof block.tracked_elapsed_seconds === "number" ? block.tracked_elapsed_seconds : null,
+      earned_points: typeof block.earned_points === "number" ? block.earned_points : null,
       can_skip: typeof block.can_skip === "boolean" ? block.can_skip : true,
       notes: block.notes || null,
       source_goal: block.source_goal || null,

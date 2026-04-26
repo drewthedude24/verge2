@@ -1,4 +1,5 @@
 import type { KaiExecutionBlock, KaiExecutionPlan } from "@/lib/kai-prompt";
+import type { PlannerHistoryRun } from "@/lib/plan-store";
 
 const ACTIONABLE_KINDS = new Set<KaiExecutionBlock["kind"]>(["task", "fixed", "workout"]);
 const HIGH_PRIORITY_PATTERN =
@@ -6,6 +7,7 @@ const HIGH_PRIORITY_PATTERN =
 
 export type ScoreEntry = {
   blockKey: string;
+  sourceRunId: string | null;
   title: string;
   kind: KaiExecutionBlock["kind"];
   status: KaiExecutionBlock["status"];
@@ -116,25 +118,95 @@ export function buildScoreboardSummary({
   elapsedSecondsByBlock: Record<string, number>;
   currentBlockKey: string | null;
 }): ScoreboardSummary {
-  const entries = (plan?.blocks || [])
+  const entries = buildScoreEntriesForPlan({
+    plan,
+    sourceRunId: null,
+    elapsedSecondsByBlock,
+    currentBlockKey,
+  });
+
+  return summarizeEntries(entries);
+}
+
+export function buildAccountScoreboard({
+  historyRuns,
+  activePlan,
+  activeRunId,
+  elapsedSecondsByBlock,
+  currentBlockKey,
+}: {
+  historyRuns: PlannerHistoryRun[];
+  activePlan: KaiExecutionPlan | null;
+  activeRunId: string | null;
+  elapsedSecondsByBlock: Record<string, number>;
+  currentBlockKey: string | null;
+}): ScoreboardSummary {
+  const historyEntries = historyRuns.flatMap((run) =>
+    buildScoreEntriesForPlan({
+      plan: {
+        plan_id: run.planKey,
+        scope_label: run.scopeLabel,
+        status: run.planStatus === "ready" ? "ready" : "draft",
+        timezone: run.timezone,
+        focus_strategy: run.focusStrategy || run.planSummary || "",
+        blocks: run.blocks,
+      },
+      sourceRunId: run.id,
+      elapsedSecondsByBlock: {},
+      currentBlockKey: null,
+    }),
+  );
+
+  const filteredHistoryEntries = activeRunId
+    ? historyEntries.filter((entry) => entry.sourceRunId !== activeRunId)
+    : historyEntries;
+
+  const activeEntries = buildScoreEntriesForPlan({
+    plan: activePlan,
+    sourceRunId: activeRunId,
+    elapsedSecondsByBlock,
+    currentBlockKey,
+  });
+
+  return summarizeEntries([...filteredHistoryEntries, ...activeEntries]);
+}
+
+function buildScoreEntriesForPlan({
+  plan,
+  sourceRunId,
+  elapsedSecondsByBlock,
+  currentBlockKey,
+}: {
+  plan: KaiExecutionPlan | null;
+  sourceRunId: string | null;
+  elapsedSecondsByBlock: Record<string, number>;
+  currentBlockKey: string | null;
+}) {
+  return (plan?.blocks || [])
     .filter(isActionableBlock)
     .map((block) => {
       const durationSeconds = Math.max(0, (block.duration_minutes || 0) * 60);
       const blockKey = `${plan?.plan_id || "plan"}:${block.id}`;
+      const hasPersistedTrackedSeconds =
+        typeof block.tracked_elapsed_seconds === "number" && Number.isFinite(block.tracked_elapsed_seconds);
+      const persistedTrackedSeconds = hasPersistedTrackedSeconds ? Math.max(0, block.tracked_elapsed_seconds || 0) : 0;
       const trackedSeconds =
         block.status === "completed"
-          ? durationSeconds
-          : Math.min(durationSeconds, Math.max(0, elapsedSecondsByBlock[blockKey] || 0));
+          ? hasPersistedTrackedSeconds
+            ? Math.min(durationSeconds, persistedTrackedSeconds)
+            : durationSeconds
+          : Math.min(durationSeconds, Math.max(persistedTrackedSeconds, elapsedSecondsByBlock[blockKey] || 0));
       const targetPoints = getBlockTargetPoints(block);
       const earnedPoints =
-        block.status === "completed"
-          ? targetPoints
+        typeof block.earned_points === "number" && Number.isFinite(block.earned_points)
+          ? Math.min(targetPoints, Math.max(0, Math.round(block.earned_points)))
           : durationSeconds > 0
             ? Math.min(targetPoints, Math.floor(targetPoints * (trackedSeconds / durationSeconds)))
             : 0;
 
       return {
         blockKey,
+        sourceRunId,
         title: block.title,
         kind: block.kind,
         status: block.status,
@@ -146,7 +218,9 @@ export function buildScoreboardSummary({
         isCurrent: currentBlockKey === blockKey,
       } satisfies ScoreEntry;
     });
+}
 
+function summarizeEntries(entries: ScoreEntry[]): ScoreboardSummary {
   const totalEarnedPoints = entries.reduce((sum, entry) => sum + entry.earnedPoints, 0);
   const totalAvailablePoints = entries.reduce((sum, entry) => sum + entry.targetPoints, 0);
   const currentEntry = entries.find((entry) => entry.isCurrent) || null;

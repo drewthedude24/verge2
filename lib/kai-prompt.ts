@@ -361,6 +361,8 @@ export interface KaiExecutionBlock {
   energy_match: "peak" | "steady" | "low" | "unknown";
   priority_band?: "low" | "medium" | "high" | null;
   point_value?: number | null;
+  tracked_elapsed_seconds?: number | null;
+  earned_points?: number | null;
   can_skip: boolean;
   source_goal: string | null;
   notes: string | null;
