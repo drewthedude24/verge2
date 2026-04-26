@@ -2,8 +2,10 @@ function trimTrailingSlash(value: string) {
   return value.replace(/\/+$/, "");
 }
 
+const DEFAULT_KAI_API_BASE_URL = "https://verge-fresh.vercel.app";
+
 export function getKaiApiBaseUrl() {
-  return trimTrailingSlash(process.env.NEXT_PUBLIC_KAI_API_BASE_URL?.trim() || "");
+  return trimTrailingSlash(process.env.NEXT_PUBLIC_KAI_API_BASE_URL?.trim() || DEFAULT_KAI_API_BASE_URL);
 }
 
 export function buildKaiApiUrl(path = "/api/kai") {
