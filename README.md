@@ -42,7 +42,7 @@ There are two ways to do this:
 - Founder / cofounder setup:
   Ask the project owner for the shared team `.env.local` and place it in the repo root. This is the fastest path if you are on the Verge team.
 - Outside contributor / stranger setup:
-  Fill in your own Supabase and model keys, or run without them in fallback mode.
+  Use the hosted Kai backend that is already configured in `.env.local.example`, then add Supabase public values if you want sign-in and saved history.
 
 Important:
 - `.env.local` is intentionally not committed to Git.
@@ -58,7 +58,7 @@ If you want strangers to download Verge and use live AI without ever seeing your
 3. Put the public backend URL into the downloadable app with:
 
 ```bash
-NEXT_PUBLIC_KAI_API_BASE_URL=https://your-verge-backend.vercel.app
+NEXT_PUBLIC_KAI_API_BASE_URL=https://verge-fresh.vercel.app
 ```
 
 4. Leave the local provider key lines blank in the downloadable app build.
@@ -82,6 +82,44 @@ This starts:
 - the Electron desktop shell
 
 If `3000` is already in use, stop the old process first.
+
+### Stranger quickstart
+
+If someone just wants to try Verge with the hosted AI backend:
+
+1. Clone the repo
+2. Run `npm install`
+3. Run:
+
+```bash
+cp .env.local.example .env.local
+```
+
+4. Add Supabase public values if they want sign-in and saved plans:
+
+```bash
+NEXT_PUBLIC_SUPABASE_URL=...
+NEXT_PUBLIC_SUPABASE_ANON_KEY=...
+```
+
+5. Start Verge:
+
+```bash
+npm run dev
+```
+
+What works with this setup:
+
+- live Kai responses through the hosted Vercel backend
+- no local model key setup
+
+What still depends on Supabase being filled in:
+
+- sign in
+- synced history
+- planner persistence across devices
+
+So yes: strangers can use the hosted model without manually finding model keys. They do **not** get access to the provider secrets.
 
 ### 4. Stop the app
 
@@ -203,7 +241,7 @@ Verge now supports a hosted Kai backend directly.
 If `NEXT_PUBLIC_KAI_API_BASE_URL` is set, the app sends Kai requests to:
 
 ```bash
-https://your-backend.example.com/api/kai
+https://verge-fresh.vercel.app/api/kai
 ```
 
 instead of requiring the model provider keys locally.
@@ -211,7 +249,7 @@ instead of requiring the model provider keys locally.
 That means a downloadable Verge build can work with:
 
 ```bash
-NEXT_PUBLIC_KAI_API_BASE_URL=https://your-verge-backend.vercel.app
+NEXT_PUBLIC_KAI_API_BASE_URL=https://verge-fresh.vercel.app
 NEXT_PUBLIC_SUPABASE_URL=...
 NEXT_PUBLIC_SUPABASE_ANON_KEY=...
 ```
@@ -231,7 +269,7 @@ The easiest production path is:
 4. copy the deployment URL into:
 
 ```bash
-NEXT_PUBLIC_KAI_API_BASE_URL=https://your-verge-backend.vercel.app
+NEXT_PUBLIC_KAI_API_BASE_URL=https://verge-fresh.vercel.app
 ```
 
 The `/api/kai` route now supports cross-origin requests, so the desktop app can call a hosted Verge backend safely without exposing the provider key.
