@@ -50,7 +50,7 @@ function storageCopy(storageState: StorageState) {
     case "saved":
       return "Latest plan synced to Supabase.";
     case "error":
-      return "Supabase is configured, but the planner tables are not ready yet.";
+      return "Supabase save failed for this plan. Open the console once and Verge should now show the exact planner table error.";
     case "disabled":
       return "Supabase auth is not configured yet, so plans stay local in this shell.";
     default:

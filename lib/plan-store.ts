@@ -22,6 +22,9 @@ type UpdateExecutionBlockStatusInput = {
 
 type SupabaseErrorLike = {
   message: string;
+  code?: string | null;
+  details?: string | null;
+  hint?: string | null;
 };
 
 type SingleRowResult<Row> = Promise<{
@@ -63,6 +66,28 @@ function plannerBlocksInsertTable(supabase: BrowserSupabaseClient) {
 
 function plannerBlocksUpdateTable(supabase: BrowserSupabaseClient) {
   return supabase.from("planner_blocks" as never) as unknown as PlannerBlocksUpdateTable;
+}
+
+function formatSupabaseError(table: string, operation: string, error: SupabaseErrorLike | null | undefined) {
+  if (!error) {
+    return `${table} ${operation} failed.`;
+  }
+
+  const parts = [`${table} ${operation} failed: ${error.message}`];
+
+  if (error.code) {
+    parts.push(`code=${error.code}`);
+  }
+
+  if (error.details) {
+    parts.push(`details=${error.details}`);
+  }
+
+  if (error.hint) {
+    parts.push(`hint=${error.hint}`);
+  }
+
+  return parts.join(" | ");
 }
 
 function normalizeBlock(block: KaiExecutionBlock, index: number) {
@@ -121,7 +146,7 @@ export async function saveExecutionPlan({
     .single();
 
   if (runError || !runData?.id) {
-    throw runError || new Error("Planner run could not be saved.");
+    throw new Error(formatSupabaseError("planner_runs", "insert", runError));
   }
 
   const blockPayload = executionPlan.blocks.map((block, index) => ({
@@ -131,7 +156,7 @@ export async function saveExecutionPlan({
 
   const { error: blockError } = await plannerBlocks.insert(blockPayload);
   if (blockError) {
-    throw blockError;
+    throw new Error(formatSupabaseError("planner_blocks", "insert", blockError));
   }
 
   return {
@@ -153,7 +178,7 @@ export async function updateExecutionBlockStatus({
     .eq("block_key", blockId);
 
   if (error) {
-    throw error;
+    throw new Error(formatSupabaseError("planner_blocks", "update", error));
   }
 }
 
