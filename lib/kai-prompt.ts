@@ -138,6 +138,7 @@ TASK PLACEMENT:
 - Deadline-driven work: backward-plan from due date
 - For named exams/papers: create milestone blocks (research → outline → draft → review)
 - Check 2:1 study rule — flag if study hours fall short
+- Assign a priority band and point value to each actionable block so the app can score real progress
 
 SLEEP PROTECTION:
 - Never schedule work past the user's stated bedtime
@@ -237,6 +238,8 @@ If you only asked a follow-up question and did not create a real schedule yet, s
         "status": "pending",
         "focus_level": "deep | light | recovery | fixed",
         "energy_match": "peak | steady | low | unknown",
+        "priority_band": "low | medium | high",
+        "point_value": 0,
         "can_skip": true,
         "source_goal": null,
         "notes": null
@@ -259,6 +262,9 @@ FIELD NOTES:
 - execution_plan.blocks must be in chronological order
 - Use "task" for actionable work, "break" or "recovery" for rest, "buffer" for transitions, and "fixed" for immovable commitments
 - Keep block.status as "pending" in model output — the app will update completion state later
+- Set point_value to 0 for breaks, buffers, meals, recovery, and commute blocks
+- For actionable blocks, use the priority band to guide point values:
+  high priority usually 8–12 points, medium priority usually 5–7 points, low priority usually 2–4 points
 - Leave unknowns as null or [] — never fabricate
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -353,6 +359,8 @@ export interface KaiExecutionBlock {
   status: "pending" | "completed" | "skipped";
   focus_level: "deep" | "light" | "recovery" | "fixed";
   energy_match: "peak" | "steady" | "low" | "unknown";
+  priority_band?: "low" | "medium" | "high" | null;
+  point_value?: number | null;
   can_skip: boolean;
   source_goal: string | null;
   notes: string | null;

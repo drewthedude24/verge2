@@ -97,7 +97,7 @@ export default function DesktopShell({
     return (
       <main className="min-h-screen bg-transparent px-3 pt-3 text-white">
         <div
-          className="mx-auto flex max-w-[860px] items-center justify-between gap-4 rounded-full border border-white/12 bg-[#0b0e13]/30 px-4 py-3 shadow-[0_24px_80px_rgba(0,0,0,0.28)] backdrop-blur-3xl"
+          className="mx-auto flex max-w-[920px] items-center justify-between gap-4 rounded-full border border-white/16 bg-[#0b0e13]/55 px-4 py-3 shadow-[0_24px_80px_rgba(0,0,0,0.28)] backdrop-blur-3xl"
           style={dragRegionStyle}
         >
           <div className="min-w-0 flex-1">
@@ -116,7 +116,7 @@ export default function DesktopShell({
           </div>
 
           {compactContent ? (
-            <div className="hidden min-w-0 flex-1 md:block" style={noDragRegionStyle}>
+            <div className="min-w-0 flex-1" style={noDragRegionStyle}>
               {compactContent}
             </div>
           ) : null}
@@ -152,7 +152,7 @@ export default function DesktopShell({
 
   return (
     <main className="h-screen overflow-hidden bg-[radial-gradient(circle_at_top,_rgba(250,126,60,0.12),_transparent_26%),radial-gradient(circle_at_bottom_right,_rgba(99,102,241,0.12),_transparent_24%)] p-3 text-white md:p-4">
-      <div className="mx-auto flex h-[calc(100vh-24px)] max-w-[1480px] flex-col overflow-hidden rounded-[30px] border border-white/10 bg-[#0b0e13]/58 shadow-[0_32px_120px_rgba(0,0,0,0.42)] backdrop-blur-2xl md:h-[calc(100vh-32px)]">
+      <div className="mx-auto flex h-[calc(100vh-24px)] max-w-[1480px] flex-col overflow-hidden rounded-[30px] border border-white/10 bg-[#0b0e13]/72 shadow-[0_32px_120px_rgba(0,0,0,0.42)] backdrop-blur-2xl md:h-[calc(100vh-32px)]">
         <header
           className="flex items-center justify-between gap-4 border-b border-white/8 px-4 py-3 md:px-6"
           style={isDesktop ? dragRegionStyle : undefined}

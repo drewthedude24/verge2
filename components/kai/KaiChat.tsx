@@ -12,6 +12,7 @@ import {
   updateExecutionBlockStatus,
   type PlannerHistoryRun,
 } from "@/lib/plan-store";
+import { buildScoreboardSummary } from "@/lib/scoreboard";
 import { createClient, isSupabaseConfigured } from "@/lib/supabase";
 import { type Message, useKai } from "@/components/kai/use-kai";
 
@@ -291,6 +292,7 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
   const [timerRunning, setTimerRunning] = useState(false);
   const [timerRemainingSeconds, setTimerRemainingSeconds] = useState(0);
   const [timerBlockKey, setTimerBlockKey] = useState<string | null>(null);
+  const [blockElapsedSeconds, setBlockElapsedSeconds] = useState<Record<string, number>>({});
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const recognitionRef = useRef<SpeechRecognition | null>(null);
@@ -366,10 +368,11 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
         ? persistedRunState.runId
         : null;
   const activePlanKey = executionPlan?.plan_id ?? null;
+  const currentTrackedElapsedSeconds = currentTimerKey ? Math.max(0, blockElapsedSeconds[currentTimerKey] || 0) : 0;
   const effectiveTimerRemainingSeconds =
     currentTimerKey && timerBlockKey === currentTimerKey
       ? timerRemainingSeconds
-      : Math.max(0, (currentBlock?.duration_minutes || 0) * 60);
+      : Math.max(0, (currentBlock?.duration_minutes || 0) * 60 - currentTrackedElapsedSeconds);
   const storageState = useMemo(() => {
     if (!authConfigured) {
       return "disabled" as const;
@@ -402,6 +405,15 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
 
     return (effectiveTimerRemainingSeconds / total) * 100;
   }, [currentBlock, effectiveTimerRemainingSeconds]);
+  const scoreboard = useMemo(
+    () =>
+      buildScoreboardSummary({
+        plan: executionPlan,
+        elapsedSecondsByBlock: blockElapsedSeconds,
+        currentBlockKey: currentTimerKey,
+      }),
+    [blockElapsedSeconds, currentTimerKey, executionPlan],
+  );
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -520,12 +532,20 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
 
         return currentValue - 1;
       });
+      setBlockElapsedSeconds((currentValue) => {
+        const existing = currentValue[currentTimerKey] || 0;
+        const maxDurationSeconds = Math.max(0, (currentBlock?.duration_minutes || 0) * 60);
+        return {
+          ...currentValue,
+          [currentTimerKey]: Math.min(maxDurationSeconds, existing + 1),
+        };
+      });
     }, 1000);
 
     return () => {
       window.clearInterval(interval);
     };
-  }, [currentTimerKey, timerBlockKey, timerRunning]);
+  }, [currentBlock?.duration_minutes, currentTimerKey, timerBlockKey, timerRunning]);
 
   useEffect(() => {
     if (!isDesktop) {
@@ -914,6 +934,16 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
         setTimerRunning(false);
       }
 
+      const blockKey = activePlanKey ? `${activePlanKey}:${blockId}` : null;
+      if (blockKey && status === "completed") {
+        const targetBlock = executionPlan.blocks.find((block) => block.id === blockId);
+        const durationSeconds = Math.max(0, (targetBlock?.duration_minutes || 0) * 60);
+        setBlockElapsedSeconds((currentValue) => ({
+          ...currentValue,
+          [blockKey]: durationSeconds,
+        }));
+      }
+
       if (!supabase || !activeRunId) {
         return;
       }
@@ -952,11 +982,13 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
     }
 
     setTimerBlockKey(currentTimerKey);
+    const durationSeconds = Math.max(0, currentBlock.duration_minutes * 60);
+    const trackedElapsed = currentTimerKey ? Math.max(0, blockElapsedSeconds[currentTimerKey] || 0) : 0;
     if (!currentTimerKey || timerBlockKey !== currentTimerKey || timerRemainingSeconds <= 0) {
-      setTimerRemainingSeconds(Math.max(0, currentBlock.duration_minutes * 60));
+      setTimerRemainingSeconds(Math.max(0, durationSeconds - trackedElapsed));
     }
     setTimerRunning(true);
-  }, [currentBlock, currentTimerKey, timerBlockKey, timerRemainingSeconds]);
+  }, [blockElapsedSeconds, currentBlock, currentTimerKey, timerBlockKey, timerRemainingSeconds]);
 
   const handlePauseTimer = useCallback(() => {
     setTimerRunning(false);
@@ -966,6 +998,12 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
     setTimerRunning(false);
     setTimerBlockKey(currentTimerKey);
     setTimerRemainingSeconds(Math.max(0, (currentBlock?.duration_minutes || 0) * 60));
+    if (currentTimerKey) {
+      setBlockElapsedSeconds((currentValue) => ({
+        ...currentValue,
+        [currentTimerKey]: 0,
+      }));
+    }
   }, [currentBlock?.duration_minutes, currentTimerKey]);
 
   async function handleSend() {
@@ -1035,6 +1073,7 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
     setTimerRunning(false);
     setTimerRemainingSeconds(0);
     setTimerBlockKey(null);
+    setBlockElapsedSeconds({});
   }
 
   function handleKeyDown(event: React.KeyboardEvent<HTMLTextAreaElement>) {
@@ -1055,14 +1094,24 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
   }
 
   const compactContent = currentBlock ? (
-    <div className="flex items-center gap-2 overflow-hidden">
-      <span className="rounded-full border border-orange-300/20 bg-orange-300/10 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-orange-100">
+    <div className="flex min-w-0 items-center gap-2 overflow-hidden">
+      <span className="rounded-full border border-orange-300/20 bg-orange-300/10 px-2 py-1 text-[9px] font-semibold uppercase tracking-[0.16em] text-orange-100">
         {activePlanSource === "history" ? "history" : "active"}
       </span>
-      <p className="truncate text-xs text-white/72">{currentBlock.title}</p>
-      <span className="rounded-full border border-white/10 bg-white/6 px-2.5 py-1 text-[11px] font-semibold text-white/88">
+      <p className="min-w-0 flex-1 truncate text-[11px] text-white/78">{currentBlock.title}</p>
+      <span className="rounded-full border border-orange-300/20 bg-orange-300/10 px-2 py-1 text-[9px] font-semibold uppercase tracking-[0.16em] text-orange-100">
+        {scoreboard.currentEarnedPoints}/{scoreboard.currentTargetPoints} pts
+      </span>
+      <span className="rounded-full border border-white/10 bg-white/8 px-2 py-1 text-[10px] font-semibold text-white/88">
         {timerLabel}
       </span>
+    </div>
+  ) : scoreboard.totalEarnedPoints > 0 ? (
+    <div className="flex min-w-0 items-center gap-2 overflow-hidden">
+      <span className="rounded-full border border-emerald-300/20 bg-emerald-300/10 px-2 py-1 text-[9px] font-semibold uppercase tracking-[0.16em] text-emerald-100">
+        {scoreboard.totalEarnedPoints} pts
+      </span>
+      <p className="truncate text-[11px] text-white/72">Session total earned so far</p>
     </div>
   ) : null;
 
@@ -1256,6 +1305,8 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
         onSelectHistoryRun={handleSelectHistoryRun}
         onReturnToLivePlan={handleReturnToLivePlan}
         canReturnToLivePlan={Boolean(currentGeneratedPlan)}
+        leaderboardName={viewer.isGuest ? "You" : viewer.name}
+        scoreboard={scoreboard}
       />
     </DesktopShell>
   );

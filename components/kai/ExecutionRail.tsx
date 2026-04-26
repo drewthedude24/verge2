@@ -1,7 +1,9 @@
 "use client";
 
+import { useMemo, useState } from "react";
 import type { KaiExecutionBlock, KaiExecutionPlan, KaiUserProfile } from "@/lib/kai-prompt";
 import type { PlannerHistoryRun } from "@/lib/plan-store";
+import { formatTrackedDuration, getBlockTargetPoints, type ScoreboardSummary } from "@/lib/scoreboard";
 
 type StorageState = "disabled" | "local" | "saving" | "saved" | "error";
 
@@ -24,6 +26,8 @@ interface ExecutionRailProps {
   onSelectHistoryRun: (runId: string) => void;
   onReturnToLivePlan: () => void;
   canReturnToLivePlan?: boolean;
+  leaderboardName: string;
+  scoreboard: ScoreboardSummary;
 }
 
 function formatClockLabel(value: string) {
@@ -120,7 +124,10 @@ export default function ExecutionRail({
   onSelectHistoryRun,
   onReturnToLivePlan,
   canReturnToLivePlan = false,
+  leaderboardName,
+  scoreboard,
 }: ExecutionRailProps) {
+  const [leaderboardOpen, setLeaderboardOpen] = useState(false);
   const blocks = plan?.blocks ?? [];
   const actionableBlocks = blocks.filter((block) => block.kind === "task" || block.kind === "fixed" || block.kind === "workout");
   const currentBlock = blocks.find((block) => block.status === "pending") ?? null;
@@ -128,6 +135,14 @@ export default function ExecutionRail({
   const skippedCount = blocks.filter((block) => block.status === "skipped").length;
   const pendingCount = blocks.filter((block) => block.status === "pending").length;
   const selectedHistoryRun = historyRuns.find((run) => run.id === selectedHistoryRunId) ?? null;
+  const currentScoreEntry = useMemo(
+    () => scoreboard.entries.find((entry) => entry.isCurrent) || null,
+    [scoreboard.entries],
+  );
+  const completedScoreEntries = useMemo(
+    () => scoreboard.completedEntries.filter((entry) => !entry.isCurrent),
+    [scoreboard.completedEntries],
+  );
 
   return (
     <aside className="flex min-h-0 flex-col gap-4 overflow-y-auto border-t border-white/8 p-4 lg:border-t-0 lg:border-l lg:p-5">
@@ -173,15 +188,32 @@ export default function ExecutionRail({
         </div>
         {currentBlock ? (
           <>
-            <h4 className="mt-3 text-base font-semibold text-white">{currentBlock.title}</h4>
-            <p className="mt-1 text-xs text-white/45">
-              {formatClockLabel(currentBlock.start_time)} to {formatClockLabel(currentBlock.end_time)}
-            </p>
+            <div className="mt-3 flex items-start justify-between gap-3">
+              <div>
+                <h4 className="text-base font-semibold text-white">{currentBlock.title}</h4>
+                <p className="mt-1 text-xs text-white/45">
+                  {formatClockLabel(currentBlock.start_time)} to {formatClockLabel(currentBlock.end_time)}
+                </p>
+              </div>
+              <div className="flex flex-col items-end gap-2">
+                <span className="rounded-full border border-orange-300/20 bg-orange-300/10 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-orange-100">
+                  {currentScoreEntry?.targetPoints || getBlockTargetPoints(currentBlock)} pts
+                </span>
+                <span className="rounded-full border border-white/10 bg-white/6 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-white/60">
+                  {currentScoreEntry?.priorityBand || "medium"}
+                </span>
+              </div>
+            </div>
             <div className="mt-4 rounded-[22px] border border-white/10 bg-white/[0.05] px-4 py-4">
               <div className="flex items-end justify-between gap-3">
                 <div>
                   <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-white/35">Countdown</p>
                   <p className="mt-2 text-3xl font-semibold tracking-tight text-white">{timerLabel}</p>
+                  {currentScoreEntry ? (
+                    <p className="mt-2 text-xs text-white/50">
+                      {currentScoreEntry.earnedPoints}/{currentScoreEntry.targetPoints} pts earned
+                    </p>
+                  ) : null}
                 </div>
                 <span
                   className={`rounded-full border px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] ${kindAccent(currentBlock.kind)}`}
@@ -257,6 +289,11 @@ export default function ExecutionRail({
                       >
                         {block.kind}
                       </span>
+                      {getBlockTargetPoints(block) > 0 ? (
+                        <span className="rounded-full border border-orange-300/20 bg-orange-300/10 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-orange-100">
+                          {getBlockTargetPoints(block)} pts
+                        </span>
+                      ) : null}
                       <span className="text-[11px] text-white/45">{block.date_label || plan?.scope_label}</span>
                     </div>
                     <h4 className="mt-2 text-sm font-semibold text-white/92">{block.title}</h4>
@@ -275,6 +312,80 @@ export default function ExecutionRail({
         ) : (
           <p className="mt-3 text-sm leading-6 text-white/58">No execution blocks yet.</p>
         )}
+      </article>
+
+      <article className="rounded-[26px] border border-white/10 bg-white/[0.04] p-4">
+        <div className="flex items-center justify-between gap-3">
+          <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-white/35">Leaderboard</p>
+          <span className="rounded-full border border-white/10 bg-white/6 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-white/60">
+            local
+          </span>
+        </div>
+
+        <button
+          onClick={() => setLeaderboardOpen((currentValue) => !currentValue)}
+          className="mt-4 flex w-full items-center justify-between rounded-[22px] border border-white/10 bg-white/[0.05] px-4 py-4 text-left transition hover:border-white/20 hover:bg-white/[0.07]"
+          type="button"
+        >
+          <div>
+            <p className="text-sm font-semibold text-white/92">{leaderboardName}</p>
+            <p className="mt-1 text-xs text-white/50">
+              {currentScoreEntry
+                ? `Working on ${currentScoreEntry.title} · ${formatTrackedDuration(currentScoreEntry.elapsedSeconds)}`
+                : "Open to see live points and completed tasks"}
+            </p>
+          </div>
+          <div className="text-right">
+            <p className="text-lg font-semibold text-white">{scoreboard.totalEarnedPoints} pts</p>
+            <p className="text-[11px] text-white/40">of {scoreboard.totalAvailablePoints}</p>
+          </div>
+        </button>
+
+        {leaderboardOpen ? (
+          <div className="mt-4 space-y-3">
+            {currentScoreEntry ? (
+              <div className="rounded-[22px] border border-orange-300/20 bg-orange-300/10 px-4 py-4">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-orange-100/75">Live progress</p>
+                    <h4 className="mt-2 text-sm font-semibold text-white">{currentScoreEntry.title}</h4>
+                  </div>
+                  <span className="rounded-full border border-orange-300/20 bg-black/10 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-orange-50">
+                    {currentScoreEntry.earnedPoints}/{currentScoreEntry.targetPoints} pts
+                  </span>
+                </div>
+                <p className="mt-2 text-xs leading-5 text-white/70">
+                  Working for {formatTrackedDuration(currentScoreEntry.elapsedSeconds)} so far.
+                </p>
+              </div>
+            ) : (
+              <div className="rounded-[22px] border border-white/10 bg-white/[0.05] px-4 py-4">
+                <p className="text-sm text-white/72">Start a timer on an important task to begin earning points.</p>
+              </div>
+            )}
+
+            {completedScoreEntries.length ? (
+              <div className="rounded-[22px] border border-white/10 bg-white/[0.05] px-4 py-4">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-white/35">Completed and earned</p>
+                <div className="mt-3 space-y-3">
+                  {completedScoreEntries.map((entry) => (
+                    <div key={entry.blockKey} className="flex items-start justify-between gap-3">
+                      <div>
+                        <p className="text-sm font-semibold text-white/90">{entry.title}</p>
+                        <p className="mt-1 text-xs text-white/45">
+                          {entry.status === "completed" ? "Completed" : "In progress"} · {formatTrackedDuration(entry.elapsedSeconds)}
+                        </p>
+                      </div>
+                      <span className="rounded-full border border-emerald-300/20 bg-emerald-300/10 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-emerald-100">
+                        {entry.earnedPoints} pts
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+          </div>
+        ) : null}
       </article>
 
       <article className="rounded-[26px] border border-white/10 bg-white/[0.04] p-4">

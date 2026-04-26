@@ -139,6 +139,8 @@ function normalizeBlock(block: KaiExecutionBlock, index: number) {
     notes: block.notes,
     metadata: {
       plan_id: block.id || `block_${index + 1}`,
+      point_value: block.point_value ?? null,
+      priority_band: block.priority_band ?? null,
     },
   };
 }
@@ -173,6 +175,10 @@ type PlannerBlockRow = {
   can_skip: boolean | null;
   source_goal: string | null;
   notes: string | null;
+  metadata?: {
+    point_value?: number | null;
+    priority_band?: "low" | "medium" | "high" | null;
+  } | null;
 };
 
 export type PlannerHistoryRun = {
@@ -202,6 +208,8 @@ function normalizeStoredBlock(row: PlannerBlockRow): KaiExecutionBlock {
     status: row.status || "pending",
     focus_level: row.focus_level || "light",
     energy_match: row.energy_match || "unknown",
+    point_value: row.metadata?.point_value ?? null,
+    priority_band: row.metadata?.priority_band ?? null,
     can_skip: row.can_skip ?? true,
     source_goal: row.source_goal || null,
     notes: row.notes || null,
@@ -236,7 +244,7 @@ export async function loadPlannerHistory({
 
   const runIds = runRows.map((row) => row.id);
   const { data: blockRows, error: blockError } = await plannerBlocks
-    .select("run_id, block_key, position, title, kind, date_label, start_time, end_time, duration_minutes, focus_level, energy_match, status, can_skip, source_goal, notes")
+    .select("run_id, block_key, position, title, kind, date_label, start_time, end_time, duration_minutes, focus_level, energy_match, status, can_skip, source_goal, notes, metadata")
     .in("run_id", runIds)
     .order("position", { ascending: true });
 
@@ -397,6 +405,8 @@ export function buildLocalExecutionPlan(profile: KaiUserProfile | null): KaiExec
       ...block,
       id: block.id || `block_${index + 1}`,
       status: block.status || "pending",
+      point_value: typeof block.point_value === "number" ? block.point_value : null,
+      priority_band: block.priority_band || null,
       can_skip: typeof block.can_skip === "boolean" ? block.can_skip : true,
       notes: block.notes || null,
       source_goal: block.source_goal || null,
