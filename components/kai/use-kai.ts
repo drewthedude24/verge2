@@ -18,6 +18,20 @@ type SendMessageOptions = {
   preferenceContext?: string | null;
 };
 
+function buildCurrentTimeContext() {
+  const now = new Date();
+  const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || "local";
+  const formattedNow = now.toLocaleString([], {
+    weekday: "long",
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+
+  return `Current local date and time on the user's device: ${formattedNow} (${timeZone}). Use this as the current real-world time for schedule reasoning.`;
+}
+
 export function useKai() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -42,6 +56,7 @@ export function useKai() {
       const memory = latestProfile?.summary?.trim() || null;
       const historyContext = options?.historyContext?.trim() || null;
       const preferenceContext = options?.preferenceContext?.trim() || null;
+      const currentTimeContext = buildCurrentTimeContext();
 
       const userMessage: Message = {
         id: crypto.randomUUID(),
@@ -76,6 +91,7 @@ export function useKai() {
             memory,
             historyContext,
             preferenceContext,
+            currentTimeContext,
           }),
           signal: abortRef.current.signal,
         });

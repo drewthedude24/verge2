@@ -656,7 +656,7 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
   useEffect(() => {
     const interval = window.setInterval(() => {
       setClockTick(Date.now());
-    }, 30000);
+    }, 5000);
 
     return () => {
       window.clearInterval(interval);

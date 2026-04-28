@@ -104,11 +104,11 @@ export function addMinutesToClock(value: string, deltaMinutes: number) {
 }
 
 export function getRoundedDelayMinutes(nowMinutes: number, scheduledMinutes: number) {
-  if (nowMinutes <= scheduledMinutes + 5) {
+  if (nowMinutes < scheduledMinutes + 5) {
     return 0;
   }
 
-  const roundedStart = Math.ceil(nowMinutes / 15) * 15;
+  const roundedStart = Math.ceil(nowMinutes / 10) * 10;
   return Math.max(0, roundedStart - scheduledMinutes);
 }
 
