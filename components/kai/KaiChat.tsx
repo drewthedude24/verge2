@@ -1037,8 +1037,11 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
       }
 
       if (event.type === "error") {
-        if (keepDictationAliveRef.current && event.code === "speech-runtime") {
-          setSpeechError(null);
+        if (
+          keepDictationAliveRef.current &&
+          event.code === "speech-runtime" &&
+          (dictatedTextRef.current.trim() || dictationInterimRef.current.trim())
+        ) {
           return;
         }
 

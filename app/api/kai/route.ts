@@ -115,13 +115,14 @@ async function generateKaiReply(
 
   const geminiContents = buildGeminiContents(messages, memory, historyContext, preferenceContext);
   const promptMessages = buildOpenAICompatibleMessages(messages, memory, historyContext, preferenceContext);
+  const systemPrompt = buildKaiSystemPrompt(preferenceContext);
   let lastError: Error | undefined;
   let lastProvider: ProviderConfig | null = null;
 
   for (const provider of providers) {
     try {
       if (provider.provider === "gemini") {
-        const text = await generateGeminiReplyWithRetry(provider, geminiContents);
+        const text = await generateGeminiReplyWithRetry(provider, geminiContents, systemPrompt);
         if (text) {
           return text;
         }
@@ -195,11 +196,11 @@ function createProviderConfig(providerName: string): ProviderConfig | null {
   }
 }
 
-function buildGeminiContents(messages: Message[], memory?: string | null, historyContext?: string | null, preferenceContext?: string | null) {
+function buildGeminiContents(messages: Message[], memory?: string | null, historyContext?: string | null, _preferenceContext?: string | null) {
   const contents: GeminiContent[] = [];
+  void _preferenceContext;
   const trimmedMemory = memory?.trim().slice(0, MEMORY_CHAR_LIMIT) || "";
   const trimmedHistory = historyContext?.trim().slice(0, 2400) || "";
-  const trimmedPreferences = preferenceContext?.trim().slice(0, 1200) || "";
 
   if (trimmedMemory) {
     contents.push({
@@ -212,13 +213,6 @@ function buildGeminiContents(messages: Message[], memory?: string | null, histor
     contents.push({
       role: "user",
       parts: [{ text: trimmedHistory }],
-    });
-  }
-
-  if (trimmedPreferences) {
-    contents.push({
-      role: "user",
-      parts: [{ text: trimmedPreferences }],
     });
   }
 
@@ -240,13 +234,12 @@ function buildOpenAICompatibleMessages(messages: Message[], memory?: string | nu
   const promptMessages: OpenAICompatibleMessage[] = [
     {
       role: "system",
-      content: KAI_SYSTEM_PROMPT,
+      content: buildKaiSystemPrompt(preferenceContext),
     },
   ];
 
   const trimmedMemory = memory?.trim().slice(0, MEMORY_CHAR_LIMIT) || "";
   const trimmedHistory = historyContext?.trim().slice(0, 2400) || "";
-  const trimmedPreferences = preferenceContext?.trim().slice(0, 1200) || "";
   if (trimmedMemory) {
     promptMessages.push({
       role: "user",
@@ -258,13 +251,6 @@ function buildOpenAICompatibleMessages(messages: Message[], memory?: string | nu
     promptMessages.push({
       role: "user",
       content: trimmedHistory,
-    });
-  }
-
-  if (trimmedPreferences) {
-    promptMessages.push({
-      role: "user",
-      content: trimmedPreferences,
     });
   }
 
@@ -280,6 +266,15 @@ function buildOpenAICompatibleMessages(messages: Message[], memory?: string | nu
   }
 
   return promptMessages;
+}
+
+function buildKaiSystemPrompt(preferenceContext?: string | null) {
+  const trimmedPreferences = preferenceContext?.trim().slice(0, 1200) || "";
+  if (!trimmedPreferences) {
+    return KAI_SYSTEM_PROMPT;
+  }
+
+  return `${KAI_SYSTEM_PROMPT}\n\n${trimmedPreferences}`;
 }
 
 function buildFallbackReply(messages: Message[], error?: Error, provider?: ProviderConfig | null) {
@@ -361,8 +356,8 @@ function delay(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function generateGeminiReplyWithRetry(provider: ProviderConfig, contents: GeminiContent[]) {
-  return retryProviderRequest(provider, () => generateGeminiReply(provider, contents));
+async function generateGeminiReplyWithRetry(provider: ProviderConfig, contents: GeminiContent[], systemPrompt: string) {
+  return retryProviderRequest(provider, () => generateGeminiReply(provider, contents, systemPrompt));
 }
 
 async function generateOpenAICompatibleReplyWithRetry(provider: ProviderConfig, messages: OpenAICompatibleMessage[]) {
@@ -394,7 +389,7 @@ async function retryProviderRequest(provider: ProviderConfig, task: () => Promis
   throw lastError ?? new Error("The model provider failed without an error message.");
 }
 
-async function generateGeminiReply(provider: ProviderConfig, contents: GeminiContent[]) {
+async function generateGeminiReply(provider: ProviderConfig, contents: GeminiContent[], systemPrompt: string) {
   const response = await fetch(
     `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(provider.model)}:generateContent`,
     {
@@ -405,7 +400,7 @@ async function generateGeminiReply(provider: ProviderConfig, contents: GeminiCon
       },
       body: JSON.stringify({
         system_instruction: {
-          parts: [{ text: KAI_SYSTEM_PROMPT }],
+          parts: [{ text: systemPrompt }],
         },
         contents,
         generationConfig: {

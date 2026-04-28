@@ -116,6 +116,7 @@ final class DictationSession {
     private var committedTranscript = ""
     private var previewTranscript = ""
     private var cycleID = UUID()
+    private var consecutiveRuntimeFailures = 0
 
     init(localeIdentifier: String) throws {
         let locale = Locale(identifier: localeIdentifier)
@@ -171,9 +172,6 @@ final class DictationSession {
 
             let request = SFSpeechAudioBufferRecognitionRequest()
             request.shouldReportPartialResults = true
-            if self.recognizer.supportsOnDeviceRecognition {
-                request.requiresOnDeviceRecognition = true
-            }
             self.recognitionRequest = request
 
             self.recognitionTask = self.recognizer.recognitionTask(with: request) { [weak self] result, error in
@@ -183,6 +181,9 @@ final class DictationSession {
 
                 if let result {
                     let transcript = result.bestTranscription.formattedString.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !transcript.isEmpty {
+                        self.consecutiveRuntimeFailures = 0
+                    }
 
                     if result.isFinal {
                         self.committedTranscript = mergeTranscriptSnapshots(previous: self.committedTranscript, next: transcript)
@@ -196,8 +197,20 @@ final class DictationSession {
                     emit(DictationEvent(type: "transcript", text: self.previewTranscript, isFinal: false))
                 }
 
-                if let _ = error {
-                    self.beginRecognitionCycle(after: 0.12)
+                if let error {
+                    self.consecutiveRuntimeFailures += 1
+
+                    if self.consecutiveRuntimeFailures >= 2 {
+                        emit(
+                            DictationEvent(
+                                type: "error",
+                                code: "speech-runtime",
+                                message: error.localizedDescription
+                            )
+                        )
+                    }
+
+                    self.beginRecognitionCycle(after: self.consecutiveRuntimeFailures >= 2 ? 0.35 : 0.12)
                 }
             }
         }

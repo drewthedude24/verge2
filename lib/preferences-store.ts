@@ -48,10 +48,12 @@ export function buildPreferenceContext(preferences: UserPreferences | null) {
   }
 
   const lines = [
-    "Saved user preferences:",
+    "Authoritative saved user preferences for this session:",
+    "Use these immediately unless the user explicitly overrides them later in chat.",
+    "If the user asks what their bedtime, wake time, focus length, or energy window is, answer from this data directly.",
     preferences.focusMinutes ? `- optimal focus block: ${preferences.focusMinutes} minutes` : null,
     preferences.wakeTime ? `- wake time: ${preferences.wakeTime}` : null,
-    preferences.sleepTime ? `- sleep time: ${preferences.sleepTime}` : null,
+    preferences.sleepTime ? `- bedtime / sleep time: ${preferences.sleepTime}` : null,
     preferences.peakFocus !== "unknown" ? `- best focus window: ${preferences.peakFocus}` : null,
     preferences.lowEnergy !== "unknown" ? `- low energy window: ${preferences.lowEnergy}` : null,
     preferences.notes.trim() ? `- notes: ${preferences.notes.trim()}` : null,
@@ -94,7 +96,9 @@ function writeLocalPreferences(userId: string | null, preferences: UserPreferenc
 function normalizePreferences(raw: Partial<UserPreferences> | null | undefined): UserPreferences {
   return {
     focusMinutes:
-      typeof raw?.focusMinutes === "number" && Number.isFinite(raw.focusMinutes) ? Math.max(15, Math.min(120, Math.round(raw.focusMinutes))) : buildDefaultPreferences().focusMinutes,
+      typeof raw?.focusMinutes === "number" && Number.isFinite(raw.focusMinutes)
+        ? Math.max(15, Math.min(120, Math.round(raw.focusMinutes)))
+        : buildDefaultPreferences().focusMinutes,
     wakeTime: raw?.wakeTime || null,
     sleepTime: raw?.sleepTime || null,
     peakFocus:
