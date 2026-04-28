@@ -11,6 +11,7 @@ interface ExecutionRailProps {
   liveModelLabel?: string | null;
   plan: KaiExecutionPlan | null;
   profile: KaiUserProfile | null;
+  taskFlowMessage?: string | null;
   storageState: StorageState;
   historyRuns: PlannerHistoryRun[];
   selectedHistoryRunId: string | null;
@@ -112,6 +113,7 @@ export default function ExecutionRail({
   liveModelLabel,
   plan,
   profile,
+  taskFlowMessage = null,
   storageState,
   historyRuns,
   selectedHistoryRunId,
@@ -135,7 +137,7 @@ export default function ExecutionRail({
 }: ExecutionRailProps) {
   const [leaderboardOpen, setLeaderboardOpen] = useState(false);
   const blocks = plan?.blocks ?? [];
-  const actionableBlocks = blocks.filter((block) => block.kind === "task" || block.kind === "fixed" || block.kind === "workout");
+  const actionableBlocks = blocks;
   const currentBlock = blocks.find((block) => block.status === "pending") ?? null;
   const completedCount = blocks.filter((block) => block.status === "completed").length;
   const skippedCount = blocks.filter((block) => block.status === "skipped").length;
@@ -181,7 +183,7 @@ export default function ExecutionRail({
         </div>
 
         <p className="mt-4 text-sm leading-6 text-white/58">
-          {plan?.focus_strategy || profile?.summary || "Saved schedules and task blocks will show up here once Kai makes a concrete plan."}
+          {taskFlowMessage || plan?.focus_strategy || profile?.summary || "Saved schedules and task blocks will show up here once Kai makes a concrete plan."}
         </p>
       </article>
 
@@ -268,7 +270,9 @@ export default function ExecutionRail({
             </div>
           </>
         ) : (
-          <p className="mt-3 text-sm leading-6 text-white/58">No pending block is active right now. Generate a schedule or open one from history.</p>
+          <p className="mt-3 text-sm leading-6 text-white/58">
+            {taskFlowMessage || "No pending block is active right now. Generate a schedule or open one from history."}
+          </p>
         )}
       </article>
 
@@ -316,7 +320,7 @@ export default function ExecutionRail({
             ))}
           </div>
         ) : (
-          <p className="mt-3 text-sm leading-6 text-white/58">No execution blocks yet.</p>
+          <p className="mt-3 text-sm leading-6 text-white/58">{taskFlowMessage || "No execution blocks yet."}</p>
         )}
       </article>
 
@@ -470,7 +474,9 @@ export default function ExecutionRail({
         <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-white/35">Storage</p>
         <p className="mt-2 text-sm leading-6 text-white/58">{storageCopy(storageState)}</p>
         <p className="mt-3 text-xs text-white/35">
-          {actionableBlocks.length} actionable blocks ready for timers, scoring, and later leaderboard points.
+          {taskFlowMessage
+            ? taskFlowMessage
+            : `${actionableBlocks.length} actionable blocks ready for timers, scoring, and later leaderboard points.`}
         </p>
         <div className="mt-4 grid grid-cols-2 gap-2">
           <MetricCard label="Model" value={liveModelLabel || "Preview"} />

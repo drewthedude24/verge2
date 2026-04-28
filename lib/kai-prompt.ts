@@ -139,6 +139,9 @@ TASK PLACEMENT:
 - For named exams/papers: create milestone blocks (research → outline → draft → review)
 - Check 2:1 study rule — flag if study hours fall short
 - Assign a priority band and point value to each actionable block so the app can score real progress
+- Distinguish between work the user can actually do inside Verge on a computer versus offline life blocks.
+  Study sessions, writing, research, online meetings, coding, and desk work can be in-app tasks.
+  School attendance, meals, workouts, golf, commuting, showering, errands, and general life anchors should stay in the text schedule but should usually not become in-app task-flow items.
 
 SLEEP PROTECTION:
 - Never schedule work past the user's stated bedtime
@@ -156,6 +159,8 @@ Match the scope the user asked for.
 - If they asked for today, tonight, this afternoon, or tomorrow: output only that window.
 - If they asked for a few specific days: output only those days.
 - Only output all 7 days when they explicitly ask for a full weekly schedule.
+- If the user clearly wants a multi-day or multi-session plan (for example "study calculus over 5 days"), give the full day-by-day text schedule instead of looping on follow-up questions once you have enough information to draft it.
+- For multi-day plans, the text response can be rich and complete even if the execution_plan task flow is empty.
 
 DAY / WINDOW
   09:00 – 10:30 | [Task] (90-min focus block)
@@ -223,6 +228,7 @@ If you only asked a follow-up question and did not create a real schedule yet, s
   "execution_plan": {
     "plan_id": "",
     "scope_label": "",
+    "timeline_mode": "single_day | multi_day",
     "status": "draft | ready",
     "timezone": null,
     "focus_strategy": "",
@@ -240,6 +246,7 @@ If you only asked a follow-up question and did not create a real schedule yet, s
         "energy_match": "peak | steady | low | unknown",
         "priority_band": "low | medium | high",
         "point_value": 0,
+        "execution_surface": "in_app | offline | none",
         "can_skip": true,
         "source_goal": null,
         "notes": null
@@ -258,11 +265,17 @@ FIELD NOTES:
 - execution_plan should be null if you have not produced a concrete schedule yet
 - execution_plan.plan_id should be a short stable id like "today_plan_1" or "week_plan_1"
 - execution_plan.scope_label should match the plan window, e.g. "Today", "Tonight", "Monday", or "This week"
+- execution_plan.timeline_mode should be "single_day" for a same-day task flow and "multi_day" for schedules that span multiple days
 - execution_plan.status = "ready" only when the schedule is concrete enough to follow now
 - execution_plan.blocks must be in chronological order
 - Use "task" for actionable work, "break" or "recovery" for rest, "buffer" for transitions, and "fixed" for immovable commitments
 - Keep block.status as "pending" in model output — the app will update completion state later
 - Set point_value to 0 for breaks, buffers, meals, recovery, and commute blocks
+- Set execution_surface to:
+  - "in_app" for computer-based work the user can actively do inside Verge
+  - "offline" for useful schedule items that happen away from the computer
+  - "none" for breaks, meals, buffers, recovery, commute, and blocks that should never appear in the task flow
+- For multi-day schedules, it is okay for execution_plan.blocks to be [] if the text plan is still useful and the right-side task flow should stay empty
 - For actionable blocks, use the priority band to guide point values:
   high priority usually 8–12 points, medium priority usually 5–7 points, low priority usually 2–4 points
 - Leave unknowns as null or [] — never fabricate
@@ -361,6 +374,7 @@ export interface KaiExecutionBlock {
   energy_match: "peak" | "steady" | "low" | "unknown";
   priority_band?: "low" | "medium" | "high" | null;
   point_value?: number | null;
+  execution_surface?: "in_app" | "offline" | "none" | null;
   tracked_elapsed_seconds?: number | null;
   earned_points?: number | null;
   can_skip: boolean;
@@ -371,6 +385,7 @@ export interface KaiExecutionBlock {
 export interface KaiExecutionPlan {
   plan_id: string;
   scope_label: string;
+  timeline_mode?: "single_day" | "multi_day";
   status: "draft" | "ready";
   timezone: string | null;
   focus_strategy: string;

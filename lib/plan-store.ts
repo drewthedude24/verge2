@@ -22,6 +22,7 @@ type UpdateExecutionBlockStatusInput = {
   earnedPoints?: number;
   pointValue?: number | null;
   priorityBand?: "low" | "medium" | "high" | null;
+  executionSurface?: "in_app" | "offline" | "none" | null;
 };
 
 type SupabaseErrorLike = {
@@ -157,6 +158,7 @@ function normalizeBlock(block: KaiExecutionBlock, index: number) {
       plan_id: block.id || `block_${index + 1}`,
       point_value: block.point_value ?? null,
       priority_band: block.priority_band ?? null,
+      execution_surface: block.execution_surface ?? null,
       tracked_elapsed_seconds: block.tracked_elapsed_seconds ?? null,
       earned_points: block.earned_points ?? null,
     },
@@ -196,6 +198,7 @@ type PlannerBlockRow = {
   metadata?: {
     point_value?: number | null;
     priority_band?: "low" | "medium" | "high" | null;
+    execution_surface?: "in_app" | "offline" | "none" | null;
     tracked_elapsed_seconds?: number | null;
     earned_points?: number | null;
   } | null;
@@ -230,6 +233,7 @@ function normalizeStoredBlock(row: PlannerBlockRow): KaiExecutionBlock {
     energy_match: row.energy_match || "unknown",
     point_value: row.metadata?.point_value ?? null,
     priority_band: row.metadata?.priority_band ?? null,
+    execution_surface: row.metadata?.execution_surface ?? null,
     tracked_elapsed_seconds: row.metadata?.tracked_elapsed_seconds ?? null,
     earned_points: row.metadata?.earned_points ?? null,
     can_skip: row.can_skip ?? true,
@@ -354,7 +358,7 @@ export async function saveExecutionPlan({
   sourcePrompt,
 }: SaveExecutionPlanInput): Promise<SaveExecutionPlanResult> {
   const executionPlan = profile.execution_plan;
-  if (!executionPlan || !executionPlan.blocks?.length) {
+  if (!executionPlan) {
     throw new Error("No execution plan is available to save.");
   }
 
@@ -383,14 +387,16 @@ export async function saveExecutionPlan({
     throw new Error(formatSupabaseError("planner_runs", "insert", runError));
   }
 
-  const blockPayload = executionPlan.blocks.map((block, index) => ({
+  const blockPayload = (executionPlan.blocks || []).map((block, index) => ({
     run_id: runData.id,
     ...normalizeBlock(block, index),
   }));
 
-  const { error: blockError } = await plannerBlocks.insert(blockPayload);
-  if (blockError) {
-    throw new Error(formatSupabaseError("planner_blocks", "insert", blockError));
+  if (blockPayload.length) {
+    const { error: blockError } = await plannerBlocks.insert(blockPayload);
+    if (blockError) {
+      throw new Error(formatSupabaseError("planner_blocks", "insert", blockError));
+    }
   }
 
   return {
@@ -407,6 +413,7 @@ export async function updateExecutionBlockStatus({
   earnedPoints,
   pointValue,
   priorityBand,
+  executionSurface,
 }: UpdateExecutionBlockStatusInput) {
   const plannerBlocks = plannerBlocksUpdateTable(supabase);
 
@@ -417,6 +424,7 @@ export async function updateExecutionBlockStatus({
         plan_id: blockId,
         point_value: pointValue ?? null,
         priority_band: priorityBand ?? null,
+        execution_surface: executionSurface ?? null,
         tracked_elapsed_seconds: typeof elapsedSeconds === "number" ? elapsedSeconds : null,
         earned_points: typeof earnedPoints === "number" ? earnedPoints : null,
       },
@@ -448,18 +456,20 @@ export async function deletePlannerRun({
 }
 
 export function buildLocalExecutionPlan(profile: KaiUserProfile | null): KaiExecutionPlan | null {
-  if (!profile?.execution_plan?.blocks?.length) {
+  if (!profile?.execution_plan) {
     return null;
   }
 
   return {
     ...profile.execution_plan,
-    blocks: profile.execution_plan.blocks.map((block, index) => ({
+    timeline_mode: profile.execution_plan.timeline_mode || "single_day",
+    blocks: (profile.execution_plan.blocks || []).map((block, index) => ({
       ...block,
       id: block.id || `block_${index + 1}`,
       status: block.status || "pending",
       point_value: typeof block.point_value === "number" ? block.point_value : null,
       priority_band: block.priority_band || null,
+      execution_surface: block.execution_surface || null,
       tracked_elapsed_seconds: typeof block.tracked_elapsed_seconds === "number" ? block.tracked_elapsed_seconds : null,
       earned_points: typeof block.earned_points === "number" ? block.earned_points : null,
       can_skip: typeof block.can_skip === "boolean" ? block.can_skip : true,
@@ -470,13 +480,14 @@ export function buildLocalExecutionPlan(profile: KaiUserProfile | null): KaiExec
 }
 
 export function buildExecutionPlanFromHistoryRun(run: PlannerHistoryRun): KaiExecutionPlan | null {
-  if (!run.blocks.length) {
+  if (!run.rawProfile?.execution_plan && !run.blocks.length) {
     return null;
   }
 
   return {
     plan_id: run.planKey,
     scope_label: run.scopeLabel,
+    timeline_mode: run.rawProfile?.execution_plan?.timeline_mode || "single_day",
     status: run.planStatus === "ready" ? "ready" : "draft",
     timezone: run.timezone,
     focus_strategy: run.focusStrategy || run.planSummary || "",

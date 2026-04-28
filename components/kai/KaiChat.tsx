@@ -14,6 +14,23 @@ import {
   updateExecutionBlockStatus,
   type PlannerHistoryRun,
 } from "@/lib/plan-store";
+import {
+  addMinutesToClock,
+  getRoundedDelayMinutes,
+  getTaskFlowMessage,
+  isMultiDayPlan,
+  isPlanActiveToday,
+  isTaskFlowEligibleBlock,
+  normalizeExecutionSurface,
+  parseClockToMinutes,
+} from "@/lib/execution-flow";
+import {
+  buildDefaultPreferences,
+  buildPreferenceContext,
+  loadUserPreferences,
+  saveUserPreferences,
+  type UserPreferences,
+} from "@/lib/preferences-store";
 import { buildAccountScoreboard, buildScoreboardSummary } from "@/lib/scoreboard";
 import { createClient, isSupabaseConfigured } from "@/lib/supabase";
 import { type Message, useKai } from "@/components/kai/use-kai";
@@ -45,6 +62,19 @@ const STARTERS = [
 ];
 
 const PUSH_TO_TALK_KEY = "Alt";
+const PREFERENCE_PEAK_OPTIONS: Array<UserPreferences["peakFocus"]> = [
+  "unknown",
+  "morning",
+  "mid-morning",
+  "afternoon",
+  "evening",
+];
+const PREFERENCE_LOW_ENERGY_OPTIONS: Array<UserPreferences["lowEnergy"]> = [
+  "unknown",
+  "morning",
+  "afternoon",
+  "evening",
+];
 
 function KaiLogo({ size = 16 }: { size?: number }) {
   return (
@@ -335,6 +365,11 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
   const [desktopDictationSupported, setDesktopDictationSupported] = useState(false);
   const [plannerHistory, setPlannerHistory] = useState<PlannerHistoryRun[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
+  const [preferencesOpen, setPreferencesOpen] = useState(false);
+  const [preferencesLoading, setPreferencesLoading] = useState(true);
+  const [preferencesSaving, setPreferencesSaving] = useState(false);
+  const [preferences, setPreferences] = useState<UserPreferences>(buildDefaultPreferences);
+  const [preferenceDraft, setPreferenceDraft] = useState<UserPreferences>(buildDefaultPreferences);
   const [deletingHistoryRunId, setDeletingHistoryRunId] = useState<string | null>(null);
   const [selectedHistoryRunId, setSelectedHistoryRunId] = useState<string | null>(null);
   const [showHistoryPlan, setShowHistoryPlan] = useState(false);
@@ -352,6 +387,7 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
   const [timerBlockKey, setTimerBlockKey] = useState<string | null>(null);
   const [blockElapsedSeconds, setBlockElapsedSeconds] = useState<Record<string, number>>({});
   const [timerAlert, setTimerAlert] = useState<TimerAlertState | null>(null);
+  const [clockTick, setClockTick] = useState(() => Date.now());
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const recognitionRef = useRef<SpeechRecognition | null>(null);
@@ -368,7 +404,10 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
   const alertedTimerBlockKeyRef = useRef<string | null>(null);
   const isDesktop = useSyncExternalStore(subscribeToDesktopBridge, getDesktopSnapshot, () => false);
   const browserSpeechSupported = useSyncExternalStore(subscribeToSpeechSupport, getSpeechSupportSnapshot, () => false);
-  const speechSupported = isDesktop ? desktopDictationSupported : browserSpeechSupported;
+  const electronPlatform = typeof window !== "undefined" ? window.electron?.platform || null : null;
+  const useNativeDesktopDictation = isDesktop && electronPlatform === "darwin";
+  const pushToTalkKeyLabel = electronPlatform === "darwin" ? "Option" : PUSH_TO_TALK_KEY;
+  const speechSupported = useNativeDesktopDictation ? desktopDictationSupported : browserSpeechSupported;
   const generatedPlan = useMemo(() => buildLocalExecutionPlan(latestProfile), [latestProfile]);
   const currentGeneratedPlan = useMemo(() => {
     if (!generatedPlan) {
@@ -428,9 +467,125 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
         : historyPlan
           ? ("history" as const)
           : ("none" as const);
-  const executionPlan =
+  const fullExecutionPlan =
     activePlanSource === "history" ? historyPlan : activePlanSource === "live" ? currentGeneratedPlan : null;
   const activeProfile = activePlanSource === "history" ? activeHistoryRun?.rawProfile ?? latestProfile : latestProfile;
+  const preferenceContext = useMemo(() => buildPreferenceContext(preferences), [preferences]);
+  const currentWeekdayLabel = useMemo(
+    () => new Date(clockTick).toLocaleDateString([], { weekday: "long" }),
+    [clockTick],
+  );
+  const taskFlowMessage = useMemo(() => getTaskFlowMessage(fullExecutionPlan), [fullExecutionPlan]);
+  const executionPlan = useMemo(() => {
+    if (!fullExecutionPlan) {
+      return null;
+    }
+
+    const filteredBlocks = fullExecutionPlan.blocks
+      .filter((block) => isTaskFlowEligibleBlock(block))
+      .map((block) => ({
+        ...block,
+        execution_surface: normalizeExecutionSurface(block),
+      }));
+
+    if (isMultiDayPlan(fullExecutionPlan) || !filteredBlocks.length) {
+      return {
+        ...fullExecutionPlan,
+        blocks: [],
+      };
+    }
+
+    if (
+      activePlanSource !== "live" ||
+      timerRunning ||
+      !isPlanActiveToday(fullExecutionPlan, currentWeekdayLabel)
+    ) {
+      return {
+        ...fullExecutionPlan,
+        blocks: filteredBlocks,
+      };
+    }
+
+    const firstPendingIndex = filteredBlocks.findIndex((block) => block.status === "pending");
+    if (firstPendingIndex === -1) {
+      return {
+        ...fullExecutionPlan,
+        blocks: filteredBlocks,
+      };
+    }
+
+    const firstPendingBlock = filteredBlocks[firstPendingIndex];
+    const firstPendingKey = `${fullExecutionPlan.plan_id}:${firstPendingBlock.id}`;
+    if ((blockElapsedSeconds[firstPendingKey] || 0) > 0) {
+      return {
+        ...fullExecutionPlan,
+        blocks: filteredBlocks,
+      };
+    }
+
+    const scheduledMinutes = parseClockToMinutes(firstPendingBlock.start_time);
+    if (scheduledMinutes === null) {
+      return {
+        ...fullExecutionPlan,
+        blocks: filteredBlocks,
+      };
+    }
+
+    const now = new Date(clockTick);
+    const nowMinutes = now.getHours() * 60 + now.getMinutes();
+    const shiftMinutes = getRoundedDelayMinutes(nowMinutes, scheduledMinutes);
+    if (!shiftMinutes) {
+      return {
+        ...fullExecutionPlan,
+        blocks: filteredBlocks,
+      };
+    }
+
+    return {
+      ...fullExecutionPlan,
+      blocks: filteredBlocks.map((block, index) => {
+        if (index < firstPendingIndex || block.status !== "pending") {
+          return block;
+        }
+
+        return {
+          ...block,
+          start_time: addMinutesToClock(block.start_time, shiftMinutes),
+          end_time: addMinutesToClock(block.end_time, shiftMinutes),
+          notes: block.notes
+            ? `${block.notes} Shifted ${shiftMinutes} min because the block was not started on time.`
+            : `Shifted ${shiftMinutes} min because the block was not started on time.`,
+        };
+      }),
+    };
+  }, [
+    activePlanSource,
+    blockElapsedSeconds,
+    clockTick,
+    currentWeekdayLabel,
+    fullExecutionPlan,
+    timerRunning,
+  ]);
+  const taskFlowHistoryRuns = useMemo(
+    () =>
+      plannerHistory.map((run) => {
+        const runPlan = buildExecutionPlanFromHistoryRun(run);
+        const filteredBlocks = isMultiDayPlan(runPlan)
+          ? []
+          : run.blocks
+              .filter((block) => isTaskFlowEligibleBlock(block))
+              .map((block) => ({
+                ...block,
+                execution_surface: normalizeExecutionSurface(block),
+              }));
+
+        return {
+          ...run,
+          blocks: filteredBlocks,
+        };
+      }),
+    [plannerHistory],
+  );
   const currentBlock = executionPlan?.blocks.find((block) => block.status === "pending") ?? null;
   const currentTimerKey = executionPlan && currentBlock ? `${executionPlan.plan_id}:${currentBlock.id}` : null;
   const activeRunId =
@@ -489,14 +644,56 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
   const accountScoreboard = useMemo(
     () =>
       buildAccountScoreboard({
-        historyRuns: plannerHistory,
+        historyRuns: taskFlowHistoryRuns,
         activePlan: executionPlan,
         activeRunId,
         elapsedSecondsByBlock: blockElapsedSeconds,
         currentBlockKey: currentTimerKey,
       }),
-    [activeRunId, blockElapsedSeconds, currentTimerKey, executionPlan, plannerHistory],
+    [activeRunId, blockElapsedSeconds, currentTimerKey, executionPlan, taskFlowHistoryRuns],
   );
+
+  useEffect(() => {
+    const interval = window.setInterval(() => {
+      setClockTick(Date.now());
+    }, 30000);
+
+    return () => {
+      window.clearInterval(interval);
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    const frame = window.requestAnimationFrame(() => {
+      if (!cancelled) {
+        setPreferencesLoading(true);
+      }
+    });
+
+    void loadUserPreferences({
+      supabase,
+      userId: viewer.id,
+    })
+      .then((loadedPreferences) => {
+        if (cancelled) {
+          return;
+        }
+
+        setPreferences(loadedPreferences);
+        setPreferenceDraft(loadedPreferences);
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setPreferencesLoading(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+      window.cancelAnimationFrame(frame);
+    };
+  }, [supabase, viewer.id]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -646,6 +843,7 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
           earnedPoints,
           pointValue: block.point_value ?? null,
           priorityBand: block.priority_band ?? null,
+          executionSurface: block.execution_surface ?? normalizeExecutionSurface(block),
         });
       } catch (error) {
         if (reportErrors) {
@@ -756,7 +954,7 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
   }, [currentBlock?.duration_minutes, currentBlock?.title, currentTimerKey, timerBlockKey, timerRunning]);
 
   useEffect(() => {
-    if (!isDesktop) {
+    if (!useNativeDesktopDictation) {
       return;
     }
 
@@ -879,10 +1077,10 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
       clearDictationRestart();
       unsubscribe?.();
     };
-  }, [isDesktop]);
+  }, [useNativeDesktopDictation]);
 
   useEffect(() => {
-    if (isDesktop) {
+    if (useNativeDesktopDictation) {
       recognitionRef.current?.abort();
       recognitionRef.current = null;
       return;
@@ -952,7 +1150,7 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
       recognition.abort();
       recognitionRef.current = null;
     };
-  }, [isDesktop]);
+  }, [useNativeDesktopDictation]);
 
   const firstName = viewer.name.split(" ")[0] || viewer.email?.split("@")[0] || "there";
 
@@ -965,14 +1163,14 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
     }
 
     setSpeechError(null);
-    keepDictationAliveRef.current = isDesktop && Boolean(options?.keepAlive);
+    keepDictationAliveRef.current = useNativeDesktopDictation && Boolean(options?.keepAlive);
     suppressNextDictationCommitRef.current = false;
     activeDesktopSessionIdRef.current = null;
     dictationBaseRef.current = input;
     dictatedTextRef.current = "";
     dictationInterimRef.current = "";
 
-    if (isDesktop) {
+    if (useNativeDesktopDictation) {
       void window.electron?.dictation?.start?.({ language: navigator.language || "en-US" });
       return;
     }
@@ -982,7 +1180,7 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
     } catch {
       setSpeechError("Voice dictation could not start cleanly. Try again.");
     }
-  }, [input, isDesktop, isLoading, speechSupported]);
+  }, [input, isLoading, speechSupported, useNativeDesktopDictation]);
 
   const stopListening = useCallback((options?: { preserveDraft?: boolean }) => {
     keepDictationAliveRef.current = false;
@@ -993,13 +1191,13 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
       restartDictationTimerRef.current = null;
     }
 
-    if (isDesktop) {
+    if (useNativeDesktopDictation) {
       void window.electron?.dictation?.stop?.();
       return;
     }
 
     recognitionRef.current?.stop();
-  }, [isDesktop]);
+  }, [useNativeDesktopDictation]);
 
   function toggleListening() {
     if (isListening) {
@@ -1007,7 +1205,7 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
       return;
     }
 
-    startListening({ keepAlive: isDesktop });
+    startListening({ keepAlive: useNativeDesktopDictation });
   }
 
   useEffect(() => {
@@ -1058,7 +1256,7 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
       window.removeEventListener("keyup", handleKeyUp);
       window.removeEventListener("blur", handleBlur);
     };
-  }, [isDesktop, isListening, isLoading, speechSupported, startListening, stopListening]);
+  }, [isDesktop, isListening, isLoading, speechSupported, startListening, stopListening, useNativeDesktopDictation]);
 
   useEffect(() => {
     if (!generatedPlan || !latestProfile || !supabase || !viewer.id) {
@@ -1357,7 +1555,10 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
     dictationBaseRef.current = "";
     dictatedTextRef.current = "";
     dictationInterimRef.current = "";
-    await sendMessage(text, { historyContext });
+    await sendMessage(text, {
+      historyContext,
+      preferenceContext,
+    });
   }
 
   async function handleStarter(text: string) {
@@ -1376,6 +1577,7 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
         userText: text,
         selectedRunId: showHistoryPlan ? selectedHistoryRunId : null,
       }),
+      preferenceContext,
     });
   }
 
@@ -1400,6 +1602,7 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
     setPersistedRunState(null);
     setPlanStatusOverrides({});
     setPlanProgressOverrides({});
+    setPreferencesOpen(false);
     setSelectedHistoryRunId(null);
     setShowHistoryPlan(false);
     setTimerRunning(false);
@@ -1408,6 +1611,27 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
     setBlockElapsedSeconds({});
     setTimerAlert(null);
     alertedTimerBlockKeyRef.current = null;
+  }
+
+  function openPreferences() {
+    setPreferenceDraft(preferences);
+    setPreferencesOpen(true);
+  }
+
+  async function handleSavePreferences() {
+    setPreferencesSaving(true);
+    try {
+      const saved = await saveUserPreferences({
+        supabase,
+        userId: viewer.id,
+        preferences: preferenceDraft,
+      });
+      setPreferences(saved);
+      setPreferenceDraft(saved);
+      setPreferencesOpen(false);
+    } finally {
+      setPreferencesSaving(false);
+    }
   }
 
   function handleKeyDown(event: React.KeyboardEvent<HTMLTextAreaElement>) {
@@ -1469,9 +1693,16 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
           : "A live model provider is not configured, so Kai uses a safe fallback instead of breaking."
       }
       compactContent={compactContent}
-      contentClassName="grid min-h-0 flex-1 gap-0 lg:grid-cols-[minmax(0,0.88fr)_360px] xl:grid-cols-[minmax(0,0.8fr)_430px]"
+      contentClassName="grid min-h-0 flex-1 gap-0 lg:grid-cols-[minmax(0,0.82fr)_400px] xl:grid-cols-[minmax(0,0.74fr)_500px]"
       actions={
         <>
+          <button
+            onClick={openPreferences}
+            className="rounded-full border border-white/10 bg-white/6 px-3 py-2 text-xs text-white/70 transition hover:border-white/20 hover:bg-white/10 hover:text-white"
+            type="button"
+          >
+            Preferences
+          </button>
           {hasStarted ? (
             <button
               onClick={handleReset}
@@ -1596,7 +1827,7 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
             />
             {isDesktop && speechSupported ? (
               <span className="mb-0.5 hidden rounded-xl border border-white/10 bg-white/[0.06] px-2.5 py-2 text-[10px] font-semibold uppercase tracking-[0.16em] text-white/55 md:inline-flex">
-                Hold Option
+                Hold {pushToTalkKeyLabel}
               </span>
             ) : null}
             <button
@@ -1641,16 +1872,173 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
               : isListening
                 ? "Listening now. Verge is adding your words into the draft."
                 : speechSupported
-                  ? "Tap the mic, or hold Option to record and release to keep the text in the draft. Kai still plans around energy, buffers, and deadlines instead of treating the calendar like a wall of equal blocks."
+                  ? `Tap the mic, or hold ${pushToTalkKeyLabel} to record and release to keep the text in the draft. Kai still plans around energy, buffers, and deadlines instead of treating the calendar like a wall of equal blocks.`
                   : "Kai plans around energy, buffers, and deadlines instead of treating the calendar like a wall of equal blocks."}
           </p>
         </footer>
       </section>
 
+      {preferencesOpen ? (
+        <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/45 px-4 py-8 backdrop-blur-sm">
+          <div className="w-full max-w-2xl rounded-[28px] border border-white/10 bg-[#0b0e13]/95 p-5 shadow-[0_32px_120px_rgba(0,0,0,0.5)]">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-orange-200/80">Preferences</p>
+                <h3 className="mt-2 text-xl font-semibold text-white">Give Kai your default planning context</h3>
+                <p className="mt-2 max-w-xl text-sm leading-6 text-white/55">
+                  Save the basics once so Kai can plan faster and stop re-asking the same setup questions every session.
+                </p>
+              </div>
+              <button
+                onClick={() => setPreferencesOpen(false)}
+                className="rounded-full border border-white/10 bg-white/6 px-3 py-1.5 text-xs text-white/70 transition hover:border-white/20 hover:bg-white/10 hover:text-white"
+                type="button"
+              >
+                Close
+              </button>
+            </div>
+
+            <div className="mt-6 grid gap-4 md:grid-cols-2">
+              <label className="rounded-[22px] border border-white/10 bg-white/[0.04] px-4 py-3">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-white/35">Optimal focus time</p>
+                <input
+                  type="number"
+                  min={15}
+                  max={180}
+                  step={5}
+                  value={preferenceDraft.focusMinutes ?? ""}
+                  onChange={(event) =>
+                    setPreferenceDraft((currentValue) => ({
+                      ...currentValue,
+                      focusMinutes: event.target.value ? Number(event.target.value) : null,
+                    }))
+                  }
+                  className="mt-3 w-full bg-transparent text-sm text-white outline-none placeholder:text-white/25"
+                  placeholder="90"
+                />
+              </label>
+
+              <label className="rounded-[22px] border border-white/10 bg-white/[0.04] px-4 py-3">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-white/35">Wake time</p>
+                <input
+                  type="time"
+                  value={preferenceDraft.wakeTime ?? ""}
+                  onChange={(event) =>
+                    setPreferenceDraft((currentValue) => ({
+                      ...currentValue,
+                      wakeTime: event.target.value || null,
+                    }))
+                  }
+                  className="mt-3 w-full bg-transparent text-sm text-white outline-none"
+                />
+              </label>
+
+              <label className="rounded-[22px] border border-white/10 bg-white/[0.04] px-4 py-3">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-white/35">Sleep time</p>
+                <input
+                  type="time"
+                  value={preferenceDraft.sleepTime ?? ""}
+                  onChange={(event) =>
+                    setPreferenceDraft((currentValue) => ({
+                      ...currentValue,
+                      sleepTime: event.target.value || null,
+                    }))
+                  }
+                  className="mt-3 w-full bg-transparent text-sm text-white outline-none"
+                />
+              </label>
+
+              <label className="rounded-[22px] border border-white/10 bg-white/[0.04] px-4 py-3">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-white/35">Best focus window</p>
+                <select
+                  value={preferenceDraft.peakFocus}
+                  onChange={(event) =>
+                    setPreferenceDraft((currentValue) => ({
+                      ...currentValue,
+                      peakFocus: event.target.value as UserPreferences["peakFocus"],
+                    }))
+                  }
+                  className="mt-3 w-full bg-transparent text-sm text-white outline-none"
+                >
+                  {PREFERENCE_PEAK_OPTIONS.map((option) => (
+                    <option key={option} value={option} className="bg-zinc-900 text-white">
+                      {option === "unknown" ? "No default" : option}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              <label className="rounded-[22px] border border-white/10 bg-white/[0.04] px-4 py-3 md:col-span-2">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-white/35">Low-energy window</p>
+                <select
+                  value={preferenceDraft.lowEnergy}
+                  onChange={(event) =>
+                    setPreferenceDraft((currentValue) => ({
+                      ...currentValue,
+                      lowEnergy: event.target.value as UserPreferences["lowEnergy"],
+                    }))
+                  }
+                  className="mt-3 w-full bg-transparent text-sm text-white outline-none"
+                >
+                  {PREFERENCE_LOW_ENERGY_OPTIONS.map((option) => (
+                    <option key={option} value={option} className="bg-zinc-900 text-white">
+                      {option === "unknown" ? "No default" : option}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              <label className="rounded-[22px] border border-white/10 bg-white/[0.04] px-4 py-3 md:col-span-2">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-white/35">General planning notes</p>
+                <textarea
+                  rows={4}
+                  value={preferenceDraft.notes}
+                  onChange={(event) =>
+                    setPreferenceDraft((currentValue) => ({
+                      ...currentValue,
+                      notes: event.target.value,
+                    }))
+                  }
+                  placeholder="Examples: I prefer deep work before noon, keep Friday nights light, I need dinner around 7."
+                  className="mt-3 w-full resize-none bg-transparent text-sm leading-6 text-white outline-none placeholder:text-white/25"
+                />
+              </label>
+            </div>
+
+            <div className="mt-5 flex items-center justify-between gap-3">
+              <p className="text-xs text-white/45">
+                {preferencesLoading ? "Loading saved preferences…" : "Kai will automatically use these preferences in future scheduling chats."}
+              </p>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => {
+                    setPreferenceDraft(preferences);
+                    setPreferencesOpen(false);
+                  }}
+                  className="rounded-full border border-white/10 bg-white/6 px-4 py-2 text-xs text-white/70 transition hover:border-white/20 hover:bg-white/10 hover:text-white"
+                  type="button"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={() => void handleSavePreferences()}
+                  disabled={preferencesSaving}
+                  className="rounded-full bg-white px-4 py-2 text-xs font-semibold text-zinc-900 transition hover:bg-white/90 disabled:cursor-default disabled:opacity-40"
+                  type="button"
+                >
+                  {preferencesSaving ? "Saving…" : "Save preferences"}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       <ExecutionRail
         liveModelLabel={liveModelLabel}
         plan={executionPlan}
         profile={activeProfile}
+        taskFlowMessage={taskFlowMessage}
         storageState={storageState}
         historyRuns={plannerHistory}
         selectedHistoryRunId={selectedHistoryRunId}

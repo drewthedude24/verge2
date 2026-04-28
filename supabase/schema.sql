@@ -37,15 +37,28 @@ create table if not exists public.planner_blocks (
   unique (run_id, block_key)
 );
 
+create table if not exists public.user_preferences (
+  user_id uuid primary key references auth.users(id) on delete cascade,
+  focus_minutes integer,
+  wake_time text,
+  sleep_time text,
+  peak_focus text not null default 'unknown',
+  low_energy text not null default 'unknown',
+  notes text,
+  updated_at timestamptz not null default timezone('utc', now())
+);
+
 create index if not exists planner_runs_user_created_idx on public.planner_runs (user_id, created_at desc);
 create index if not exists planner_blocks_run_position_idx on public.planner_blocks (run_id, position);
 
 grant usage on schema public to authenticated;
 grant select, insert, update, delete on table public.planner_runs to authenticated;
 grant select, insert, update, delete on table public.planner_blocks to authenticated;
+grant select, insert, update, delete on table public.user_preferences to authenticated;
 
 alter table public.planner_runs enable row level security;
 alter table public.planner_blocks enable row level security;
+alter table public.user_preferences enable row level security;
 
 drop policy if exists "Users can read their own planner runs" on public.planner_runs;
 create policy "Users can read their own planner runs"
@@ -139,3 +152,32 @@ create policy "Users can delete blocks for their own planner runs"
         and planner_runs.user_id = auth.uid()
     )
   );
+
+drop policy if exists "Users can read their own preferences" on public.user_preferences;
+create policy "Users can read their own preferences"
+  on public.user_preferences
+  for select
+  to authenticated
+  using (auth.uid() = user_id);
+
+drop policy if exists "Users can insert their own preferences" on public.user_preferences;
+create policy "Users can insert their own preferences"
+  on public.user_preferences
+  for insert
+  to authenticated
+  with check (auth.uid() = user_id);
+
+drop policy if exists "Users can update their own preferences" on public.user_preferences;
+create policy "Users can update their own preferences"
+  on public.user_preferences
+  for update
+  to authenticated
+  using (auth.uid() = user_id)
+  with check (auth.uid() = user_id);
+
+drop policy if exists "Users can delete their own preferences" on public.user_preferences;
+create policy "Users can delete their own preferences"
+  on public.user_preferences
+  for delete
+  to authenticated
+  using (auth.uid() = user_id);

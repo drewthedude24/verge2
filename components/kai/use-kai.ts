@@ -15,6 +15,7 @@ export interface Message {
 
 type SendMessageOptions = {
   historyContext?: string | null;
+  preferenceContext?: string | null;
 };
 
 export function useKai() {
@@ -40,6 +41,7 @@ export function useKai() {
       const recentHistory = history.filter((message) => message.content).slice(-6);
       const memory = latestProfile?.summary?.trim() || null;
       const historyContext = options?.historyContext?.trim() || null;
+      const preferenceContext = options?.preferenceContext?.trim() || null;
 
       const userMessage: Message = {
         id: crypto.randomUUID(),
@@ -73,6 +75,7 @@ export function useKai() {
             messages: [...recentHistory, { role: "user", content: cleanedText }],
             memory,
             historyContext,
+            preferenceContext,
           }),
           signal: abortRef.current.signal,
         });
