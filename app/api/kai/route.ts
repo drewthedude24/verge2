@@ -198,7 +198,7 @@ function createProviderConfig(providerName: string): ProviderConfig | null {
 
 function buildGeminiContents(messages: Message[], memory?: string | null, historyContext?: string | null, _preferenceContext?: string | null) {
   const contents: GeminiContent[] = [];
-  void _preferenceContext;
+  const trimmedPreferences = _preferenceContext?.trim().slice(0, 1200) || "";
   const trimmedMemory = memory?.trim().slice(0, MEMORY_CHAR_LIMIT) || "";
   const trimmedHistory = historyContext?.trim().slice(0, 2400) || "";
 
@@ -213,6 +213,13 @@ function buildGeminiContents(messages: Message[], memory?: string | null, histor
     contents.push({
       role: "user",
       parts: [{ text: trimmedHistory }],
+    });
+  }
+
+  if (trimmedPreferences) {
+    contents.push({
+      role: "user",
+      parts: [{ text: trimmedPreferences }],
     });
   }
 
@@ -240,6 +247,7 @@ function buildOpenAICompatibleMessages(messages: Message[], memory?: string | nu
 
   const trimmedMemory = memory?.trim().slice(0, MEMORY_CHAR_LIMIT) || "";
   const trimmedHistory = historyContext?.trim().slice(0, 2400) || "";
+  const trimmedPreferences = preferenceContext?.trim().slice(0, 1200) || "";
   if (trimmedMemory) {
     promptMessages.push({
       role: "user",
@@ -251,6 +259,13 @@ function buildOpenAICompatibleMessages(messages: Message[], memory?: string | nu
     promptMessages.push({
       role: "user",
       content: trimmedHistory,
+    });
+  }
+
+  if (trimmedPreferences) {
+    promptMessages.push({
+      role: "user",
+      content: trimmedPreferences,
     });
   }
 
