@@ -1,5 +1,12 @@
+import { isTaskFlowEligibleBlock, normalizeExecutionSurface } from "@/lib/execution-flow";
 import type { KaiExecutionBlock, KaiExecutionPlan, KaiUserProfile } from "@/lib/kai-prompt";
 import type { BrowserSupabaseClient } from "@/lib/supabase";
+
+const HIGH_PRIORITY_PATTERN =
+  /\b(test|exam|quiz|deadline|due|paper|essay|project|midterm|final|interview|presentation|study|calc|calculus|physics|chem|research|draft|outline|submit)\b/i;
+const LOW_PRIORITY_PATTERN = /\b(review|organize|admin|email|follow up|prep|light)\b/i;
+const OFFLINE_CANDIDATE_PATTERN =
+  /\b(school|class|lecture|campus|commute|drive|travel|bus|train|walk|dinner|lunch|breakfast|meal|golf|gym|workout|practice|shower|sleep|nap|errand|chores?|hangout|social|family time)\b/i;
 
 type SaveExecutionPlanInput = {
   supabase: BrowserSupabaseClient;
@@ -357,10 +364,15 @@ export async function saveExecutionPlan({
   profile,
   sourcePrompt,
 }: SaveExecutionPlanInput): Promise<SaveExecutionPlanResult> {
-  const executionPlan = profile.execution_plan;
+  const executionPlan = buildLocalExecutionPlan(profile);
   if (!executionPlan) {
     throw new Error("No execution plan is available to save.");
   }
+
+  const persistedProfile: KaiUserProfile = {
+    ...profile,
+    execution_plan: executionPlan,
+  };
 
   const runPayload = {
     user_id: userId,
@@ -372,7 +384,7 @@ export async function saveExecutionPlan({
     plan_summary: profile.summary,
     source_prompt: sourcePrompt,
     provider_label: providerLabel || null,
-    raw_profile: profile,
+    raw_profile: persistedProfile,
   };
 
   const plannerRuns = plannerRunsTable(supabase);
@@ -455,45 +467,226 @@ export async function deletePlannerRun({
   }
 }
 
-export function buildLocalExecutionPlan(profile: KaiUserProfile | null): KaiExecutionPlan | null {
-  if (!profile?.execution_plan) {
-    return null;
+function slugifyPlanText(value: string) {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 48);
+}
+
+function inferPriorityBand(label: string, urgency?: "low" | "medium" | "high" | null): "low" | "medium" | "high" {
+  if (urgency === "high" || urgency === "medium" || urgency === "low") {
+    return urgency;
   }
 
+  if (HIGH_PRIORITY_PATTERN.test(label)) {
+    return "high";
+  }
+
+  if (LOW_PRIORITY_PATTERN.test(label)) {
+    return "low";
+  }
+
+  return "medium";
+}
+
+function inferDurationMinutes(priorityBand: "low" | "medium" | "high") {
+  switch (priorityBand) {
+    case "high":
+      return 90;
+    case "low":
+      return 45;
+    default:
+      return 60;
+  }
+}
+
+function inferPointValue(priorityBand: "low" | "medium" | "high") {
+  switch (priorityBand) {
+    case "high":
+      return 10;
+    case "low":
+      return 3;
+    default:
+      return 6;
+  }
+}
+
+function normalizeExecutionBlock(block: KaiExecutionBlock, index: number): KaiExecutionBlock {
   return {
-    ...profile.execution_plan,
-    timeline_mode: profile.execution_plan.timeline_mode || "single_day",
-    blocks: (profile.execution_plan.blocks || []).map((block, index) => ({
-      ...block,
-      id: block.id || `block_${index + 1}`,
-      status: block.status || "pending",
-      point_value: typeof block.point_value === "number" ? block.point_value : null,
-      priority_band: block.priority_band || null,
-      execution_surface: block.execution_surface || null,
-      tracked_elapsed_seconds: typeof block.tracked_elapsed_seconds === "number" ? block.tracked_elapsed_seconds : null,
-      earned_points: typeof block.earned_points === "number" ? block.earned_points : null,
-      can_skip: typeof block.can_skip === "boolean" ? block.can_skip : true,
-      notes: block.notes || null,
-      source_goal: block.source_goal || null,
-    })),
+    ...block,
+    id: block.id || `block_${index + 1}`,
+    status: block.status || "pending",
+    point_value: typeof block.point_value === "number" ? block.point_value : null,
+    priority_band: block.priority_band || null,
+    execution_surface: normalizeExecutionSurface(block),
+    tracked_elapsed_seconds: typeof block.tracked_elapsed_seconds === "number" ? block.tracked_elapsed_seconds : null,
+    earned_points: typeof block.earned_points === "number" ? block.earned_points : null,
+    can_skip: typeof block.can_skip === "boolean" ? block.can_skip : true,
+    notes: block.notes || null,
+    source_goal: block.source_goal || null,
   };
 }
 
+function buildFallbackTaskSeeds(profile: KaiUserProfile) {
+  const seeds: Array<{ title: string; priorityBand: "low" | "medium" | "high"; sourceGoal: string }> = [];
+  const seen = new Set<string>();
+
+  for (const deadline of profile.user_profile.deadlines || []) {
+    const title = (deadline.label || "").trim();
+    if (!title || OFFLINE_CANDIDATE_PATTERN.test(title)) {
+      continue;
+    }
+
+    const key = slugifyPlanText(title);
+    if (!key || seen.has(key)) {
+      continue;
+    }
+
+    seen.add(key);
+    seeds.push({
+      title,
+      priorityBand: inferPriorityBand(title, deadline.urgency),
+      sourceGoal: title,
+    });
+  }
+
+  for (const goal of profile.user_profile.goals || []) {
+    const title = (goal || "").trim();
+    if (!title || OFFLINE_CANDIDATE_PATTERN.test(title)) {
+      continue;
+    }
+
+    const key = slugifyPlanText(title);
+    if (!key || seen.has(key)) {
+      continue;
+    }
+
+    seen.add(key);
+    seeds.push({
+      title,
+      priorityBand: inferPriorityBand(title, null),
+      sourceGoal: title,
+    });
+  }
+
+  return seeds.slice(0, 6);
+}
+
+function buildFallbackExecutionPlan(profile: KaiUserProfile, basePlan: KaiExecutionPlan | null): KaiExecutionPlan | null {
+  if (basePlan?.timeline_mode === "multi_day") {
+    return basePlan;
+  }
+
+  const seeds = buildFallbackTaskSeeds(profile);
+  if (!seeds.length) {
+    return basePlan;
+  }
+
+  const planKeyBasis =
+    basePlan?.plan_id ||
+    slugifyPlanText(
+      [basePlan?.scope_label || "", ...seeds.map((seed) => seed.title)]
+        .filter(Boolean)
+        .join("-"),
+    ) ||
+    "fallback-task-flow";
+  const scopeLabel = basePlan?.scope_label || "Today";
+  const dateLabel = basePlan?.blocks.find((block) => block.date_label?.trim())?.date_label || scopeLabel;
+
+  return {
+    plan_id: planKeyBasis,
+    scope_label: scopeLabel,
+    timeline_mode: "single_day",
+    status: "ready",
+    timezone: basePlan?.timezone || profile.execution_plan?.timezone || null,
+    focus_strategy:
+      basePlan?.focus_strategy ||
+      "Verge synthesized actionable desk-work tasks because Kai's structured schedule did not include enough in-app execution blocks.",
+    blocks: seeds.map((seed, index) => {
+      const durationMinutes = inferDurationMinutes(seed.priorityBand);
+      const taskSlug = slugifyPlanText(seed.title) || `task-${index + 1}`;
+
+      return {
+        id: `${planKeyBasis}-${taskSlug}-${index + 1}`,
+        title: seed.title,
+        kind: "task",
+        date_label: dateLabel,
+        start_time: "",
+        end_time: "",
+        duration_minutes: durationMinutes,
+        status: "pending",
+        focus_level: seed.priorityBand === "high" ? "deep" : "light",
+        energy_match: seed.priorityBand === "high" ? "peak" : "steady",
+        priority_band: seed.priorityBand,
+        point_value: inferPointValue(seed.priorityBand),
+        execution_surface: "in_app",
+        tracked_elapsed_seconds: null,
+        earned_points: null,
+        can_skip: true,
+        source_goal: seed.sourceGoal,
+        notes: "Fallback task generated from your saved goals and deadlines so Verge still has an actionable task flow.",
+      } satisfies KaiExecutionBlock;
+    }),
+  };
+}
+
+export function buildLocalExecutionPlan(profile: KaiUserProfile | null): KaiExecutionPlan | null {
+  if (!profile) {
+    return null;
+  }
+
+  const normalizedPlan = profile.execution_plan
+    ? {
+        ...profile.execution_plan,
+        timeline_mode: profile.execution_plan.timeline_mode || "single_day",
+        blocks: (profile.execution_plan.blocks || []).map(normalizeExecutionBlock),
+      }
+    : null;
+
+  if (normalizedPlan?.blocks.some((block) => isTaskFlowEligibleBlock(block))) {
+    return normalizedPlan;
+  }
+
+  return buildFallbackExecutionPlan(profile, normalizedPlan);
+}
+
 export function buildExecutionPlanFromHistoryRun(run: PlannerHistoryRun): KaiExecutionPlan | null {
-  if (!run.rawProfile?.execution_plan && !run.blocks.length) {
+  if (!run.rawProfile?.execution_plan && !run.blocks.length && !run.rawProfile) {
+    return null;
+  }
+
+  if (run.blocks.length) {
+    return {
+      plan_id: run.planKey,
+      scope_label: run.scopeLabel,
+      timeline_mode: run.rawProfile?.execution_plan?.timeline_mode || "single_day",
+      status: run.planStatus === "ready" ? "ready" : "draft",
+      timezone: run.timezone,
+      focus_strategy: run.focusStrategy || run.planSummary || "",
+      blocks: run.blocks.map((block) => ({
+        ...block,
+        id: block.id || crypto.randomUUID(),
+      })),
+    };
+  }
+
+  if (!run.rawProfile) {
+    return null;
+  }
+
+  const fallbackPlan = buildLocalExecutionPlan(run.rawProfile);
+  if (!fallbackPlan) {
     return null;
   }
 
   return {
-    plan_id: run.planKey,
-    scope_label: run.scopeLabel,
-    timeline_mode: run.rawProfile?.execution_plan?.timeline_mode || "single_day",
-    status: run.planStatus === "ready" ? "ready" : "draft",
-    timezone: run.timezone,
-    focus_strategy: run.focusStrategy || run.planSummary || "",
-    blocks: run.blocks.map((block) => ({
-      ...block,
-      id: block.id || crypto.randomUUID(),
-    })),
+    ...fallbackPlan,
+    plan_id: run.planKey || fallbackPlan.plan_id,
+    scope_label: run.scopeLabel || fallbackPlan.scope_label,
+    status: run.planStatus === "ready" ? "ready" : fallbackPlan.status,
+    timezone: run.timezone || fallbackPlan.timezone,
+    focus_strategy: run.focusStrategy || run.planSummary || fallbackPlan.focus_strategy,
   };
 }
