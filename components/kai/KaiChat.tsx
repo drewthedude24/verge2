@@ -1534,6 +1534,17 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
     });
   }, [activePlanKey, activeRunId, currentBlock, currentTimerKey, persistBlockProgress]);
 
+  const clearComposerDraft = useCallback(() => {
+    setInput("");
+    dictationBaseRef.current = "";
+    dictatedTextRef.current = "";
+    dictationInterimRef.current = "";
+
+    if (inputRef.current) {
+      inputRef.current.value = "";
+    }
+  }, []);
+
   async function handleSend() {
     if (!input.trim() || isLoading) {
       return;
@@ -1550,18 +1561,20 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
       selectedRunId: showHistoryPlan ? selectedHistoryRunId : null,
     });
     lastUserPromptRef.current = text;
-    setInput("");
+    clearComposerDraft();
     setHasStarted(true);
     setShowHistoryPlan(false);
     setTimerAlert(null);
     setSpeechError(null);
-    dictationBaseRef.current = "";
-    dictatedTextRef.current = "";
-    dictationInterimRef.current = "";
-    await sendMessage(text, {
-      historyContext,
-      preferenceContext,
-    });
+
+    try {
+      await sendMessage(text, {
+        historyContext,
+        preferenceContext,
+      });
+    } finally {
+      clearComposerDraft();
+    }
   }
 
   async function handleStarter(text: string) {
@@ -1593,11 +1606,8 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
 
     resetConversation();
     setHasStarted(false);
-    setInput("");
+    clearComposerDraft();
     setSpeechError(null);
-    dictatedTextRef.current = "";
-    dictationInterimRef.current = "";
-    dictationBaseRef.current = "";
     lastUserPromptRef.current = "";
     persistRequestPlanKeyRef.current = null;
     setPersistedPlanKey(null);
