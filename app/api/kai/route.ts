@@ -85,12 +85,14 @@ export async function POST(request: NextRequest) {
       historyContext,
       preferenceContext,
       currentTimeContext,
+      calendarIntentContext,
     }: {
       messages?: Message[];
       memory?: string | null;
       historyContext?: string | null;
       preferenceContext?: string | null;
       currentTimeContext?: string | null;
+      calendarIntentContext?: string | null;
     } = await request.json();
 
     if (!Array.isArray(messages)) {
@@ -101,7 +103,15 @@ export async function POST(request: NextRequest) {
     }
 
     const providers = getConfiguredProviders();
-    const text = await generateKaiReply(messages, memory, historyContext, preferenceContext, currentTimeContext, providers);
+    const text = await generateKaiReply(
+      messages,
+      memory,
+      historyContext,
+      preferenceContext,
+      currentTimeContext,
+      calendarIntentContext,
+      providers,
+    );
     return streamText(text);
   } catch (error) {
     console.error("[Kai API] Error:", error);
@@ -115,15 +125,30 @@ async function generateKaiReply(
   historyContext: string | null | undefined,
   preferenceContext: string | null | undefined,
   currentTimeContext: string | null | undefined,
+  calendarIntentContext: string | null | undefined,
   providers: ProviderConfig[],
 ) {
   if (!providers.length) {
     return buildFallbackReply(messages);
   }
 
-  const geminiContents = buildGeminiContents(messages, memory, historyContext, preferenceContext, currentTimeContext);
-  const promptMessages = buildOpenAICompatibleMessages(messages, memory, historyContext, preferenceContext, currentTimeContext);
-  const systemPrompt = buildKaiSystemPrompt(preferenceContext, currentTimeContext);
+  const geminiContents = buildGeminiContents(
+    messages,
+    memory,
+    historyContext,
+    preferenceContext,
+    currentTimeContext,
+    calendarIntentContext,
+  );
+  const promptMessages = buildOpenAICompatibleMessages(
+    messages,
+    memory,
+    historyContext,
+    preferenceContext,
+    currentTimeContext,
+    calendarIntentContext,
+  );
+  const systemPrompt = buildKaiSystemPrompt(preferenceContext, currentTimeContext, calendarIntentContext);
   let lastError: Error | undefined;
   let lastProvider: ProviderConfig | null = null;
 
@@ -210,12 +235,14 @@ function buildGeminiContents(
   historyContext?: string | null,
   _preferenceContext?: string | null,
   currentTimeContext?: string | null,
+  calendarIntentContext?: string | null,
 ) {
   const contents: GeminiContent[] = [];
   const trimmedPreferences = _preferenceContext?.trim().slice(0, 1200) || "";
   const trimmedMemory = memory?.trim().slice(0, MEMORY_CHAR_LIMIT) || "";
   const trimmedHistory = historyContext?.trim().slice(0, 2400) || "";
   const trimmedCurrentTime = currentTimeContext?.trim().slice(0, 300) || "";
+  const trimmedCalendarIntent = calendarIntentContext?.trim().slice(0, 800) || "";
 
   if (trimmedMemory) {
     contents.push({
@@ -245,6 +272,13 @@ function buildGeminiContents(
     });
   }
 
+  if (trimmedCalendarIntent) {
+    contents.push({
+      role: "user",
+      parts: [{ text: trimmedCalendarIntent }],
+    });
+  }
+
   for (const message of messages.slice(-HISTORY_TURN_LIMIT)) {
     if (!message.content?.trim()) {
       continue;
@@ -265,11 +299,12 @@ function buildOpenAICompatibleMessages(
   historyContext?: string | null,
   preferenceContext?: string | null,
   currentTimeContext?: string | null,
+  calendarIntentContext?: string | null,
 ) {
   const promptMessages: OpenAICompatibleMessage[] = [
     {
       role: "system",
-      content: buildKaiSystemPrompt(preferenceContext),
+      content: buildKaiSystemPrompt(preferenceContext, currentTimeContext, calendarIntentContext),
     },
   ];
 
@@ -277,6 +312,7 @@ function buildOpenAICompatibleMessages(
   const trimmedHistory = historyContext?.trim().slice(0, 2400) || "";
   const trimmedPreferences = preferenceContext?.trim().slice(0, 1200) || "";
   const trimmedCurrentTime = currentTimeContext?.trim().slice(0, 300) || "";
+  const trimmedCalendarIntent = calendarIntentContext?.trim().slice(0, 800) || "";
   if (trimmedMemory) {
     promptMessages.push({
       role: "user",
@@ -305,6 +341,13 @@ function buildOpenAICompatibleMessages(
     });
   }
 
+  if (trimmedCalendarIntent) {
+    promptMessages.push({
+      role: "user",
+      content: trimmedCalendarIntent,
+    });
+  }
+
   for (const message of messages.slice(-HISTORY_TURN_LIMIT)) {
     if (!message.content?.trim()) {
       continue;
@@ -319,14 +362,21 @@ function buildOpenAICompatibleMessages(
   return promptMessages;
 }
 
-function buildKaiSystemPrompt(preferenceContext?: string | null, currentTimeContext?: string | null) {
+function buildKaiSystemPrompt(
+  preferenceContext?: string | null,
+  currentTimeContext?: string | null,
+  calendarIntentContext?: string | null,
+) {
   const trimmedPreferences = preferenceContext?.trim().slice(0, 1200) || "";
   const trimmedCurrentTime = currentTimeContext?.trim().slice(0, 300) || "";
-  if (!trimmedPreferences && !trimmedCurrentTime) {
+  const trimmedCalendarIntent = calendarIntentContext?.trim().slice(0, 800) || "";
+  if (!trimmedPreferences && !trimmedCurrentTime && !trimmedCalendarIntent) {
     return KAI_SYSTEM_PROMPT;
   }
 
-  return [KAI_SYSTEM_PROMPT, trimmedPreferences, trimmedCurrentTime].filter(Boolean).join("\n\n");
+  return [KAI_SYSTEM_PROMPT, trimmedPreferences, trimmedCurrentTime, trimmedCalendarIntent]
+    .filter(Boolean)
+    .join("\n\n");
 }
 
 function buildFallbackReply(messages: Message[], error?: Error, provider?: ProviderConfig | null) {

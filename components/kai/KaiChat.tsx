@@ -5,6 +5,14 @@ import ExecutionRail from "@/components/kai/ExecutionRail";
 import DesktopShell from "@/components/layout/DesktopShell";
 import type { KaiExecutionBlock } from "@/lib/kai-prompt";
 import {
+  buildCalendarIntentContext,
+  deleteCalendarEvent,
+  getUSHolidaysForYear,
+  importPlanToCalendar,
+  loadCalendarEvents,
+  type CalendarEvent,
+} from "@/lib/calendar-store";
+import {
   buildExecutionPlanFromHistoryRun,
   buildLocalExecutionPlan,
   buildPlannerHistoryContext,
@@ -16,10 +24,12 @@ import {
 } from "@/lib/plan-store";
 import {
   addMinutesToClock,
+  formatMinutesAsClock,
   getRoundedDelayMinutes,
   getTaskFlowMessage,
   isPlanActiveToday,
   isTaskFlowEligibleBlock,
+  isMultiDayPlan,
   normalizeExecutionSurface,
   parseClockToMinutes,
 } from "@/lib/execution-flow";
@@ -207,6 +217,117 @@ function formatCountdown(totalSeconds: number) {
   return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
 }
 
+function appendPlannerNote(existing: string | null | undefined, note: string) {
+  if (!existing?.trim()) {
+    return note;
+  }
+
+  return existing.includes(note) ? existing : `${existing} ${note}`;
+}
+
+function applySchoolWindowToBlocks(
+  blocks: KaiExecutionBlock[],
+  options: {
+    enabled: boolean;
+    weekdayIndex: number;
+    schoolStartTime: string | null;
+    schoolEndTime: string | null;
+  },
+) {
+  if (!options.enabled || options.weekdayIndex === 0 || options.weekdayIndex === 6) {
+    return blocks;
+  }
+
+  const schoolStartMinutes = parseClockToMinutes(options.schoolStartTime || "");
+  const schoolEndMinutes = parseClockToMinutes(options.schoolEndTime || "");
+  if (schoolStartMinutes === null || schoolEndMinutes === null || schoolEndMinutes <= schoolStartMinutes) {
+    return blocks;
+  }
+
+  let nextOpenMinutes: number | null = null;
+
+  return blocks.map((block) => {
+    if (block.status !== "pending") {
+      return block;
+    }
+
+    const startMinutes = parseClockToMinutes(block.start_time || "");
+    const endMinutes = parseClockToMinutes(block.end_time || "");
+    if (startMinutes === null || endMinutes === null || endMinutes <= startMinutes) {
+      return block;
+    }
+
+    const durationMinutes = endMinutes - startMinutes;
+    let adjustedStartMinutes = startMinutes;
+    let adjusted = false;
+
+    if (nextOpenMinutes !== null && adjustedStartMinutes < nextOpenMinutes) {
+      adjustedStartMinutes = nextOpenMinutes;
+      adjusted = true;
+    }
+
+    const adjustedEndMinutes = adjustedStartMinutes + durationMinutes;
+    const overlapsSchool =
+      adjustedStartMinutes < schoolEndMinutes && adjustedEndMinutes > schoolStartMinutes;
+
+    if (overlapsSchool) {
+      adjustedStartMinutes = Math.max(adjustedStartMinutes, schoolEndMinutes);
+      adjusted = true;
+    }
+
+    if (!adjusted) {
+      nextOpenMinutes = endMinutes + 10;
+      return block;
+    }
+
+    const finalEndMinutes = adjustedStartMinutes + durationMinutes;
+    nextOpenMinutes = finalEndMinutes + 10;
+
+    return {
+      ...block,
+      start_time: formatMinutesAsClock(adjustedStartMinutes),
+      end_time: formatMinutesAsClock(finalEndMinutes),
+      notes: appendPlannerNote(
+        block.notes,
+        `Moved outside weekday school hours (${options.schoolStartTime}–${options.schoolEndTime}).`,
+      ),
+    };
+  });
+}
+
+function formatCalendarDateHeading(value: string) {
+  const date = new Date(`${value}T12:00:00`);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+
+  return date.toLocaleDateString([], {
+    weekday: "long",
+    month: "short",
+    day: "numeric",
+  });
+}
+
+function formatCalendarTimeRange(startTime: string | null, endTime: string | null) {
+  if (!startTime && !endTime) {
+    return "All day";
+  }
+
+  const format = (value: string | null) => {
+    if (!value || !/^\d{2}:\d{2}$/.test(value)) {
+      return value || "Time TBD";
+    }
+
+    const [hourText, minute] = value.split(":");
+    const hour = Number(hourText);
+    const suffix = hour >= 12 ? "PM" : "AM";
+    const normalizedHour = hour % 12 || 12;
+    return `${normalizedHour}:${minute} ${suffix}`;
+  };
+
+  return [format(startTime), format(endTime)].filter(Boolean).join(" – ");
+}
+
 function mapBrowserSpeechError(error: string) {
   switch (error) {
     case "not-allowed":
@@ -369,6 +490,12 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
   const [preferencesSaving, setPreferencesSaving] = useState(false);
   const [preferences, setPreferences] = useState<UserPreferences>(buildDefaultPreferences);
   const [preferenceDraft, setPreferenceDraft] = useState<UserPreferences>(buildDefaultPreferences);
+  const [calendarOpen, setCalendarOpen] = useState(false);
+  const [calendarLoading, setCalendarLoading] = useState(true);
+  const [calendarImporting, setCalendarImporting] = useState(false);
+  const [calendarEvents, setCalendarEvents] = useState<CalendarEvent[]>([]);
+  const [calendarStatus, setCalendarStatus] = useState<string | null>(null);
+  const [lastRequestWantedCalendar, setLastRequestWantedCalendar] = useState(false);
   const [deletingHistoryRunId, setDeletingHistoryRunId] = useState<string | null>(null);
   const [selectedHistoryRunId, setSelectedHistoryRunId] = useState<string | null>(null);
   const [showHistoryPlan, setShowHistoryPlan] = useState(false);
@@ -387,6 +514,7 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
   const [blockElapsedSeconds, setBlockElapsedSeconds] = useState<Record<string, number>>({});
   const [timerAlert, setTimerAlert] = useState<TimerAlertState | null>(null);
   const [clockTick, setClockTick] = useState(() => Date.now());
+  const [lockInModeEnabled, setLockInModeEnabled] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const recognitionRef = useRef<SpeechRecognition | null>(null);
@@ -474,10 +602,28 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
     () => new Date(clockTick).toLocaleDateString([], { weekday: "long" }),
     [clockTick],
   );
-  const taskFlowMessage = useMemo(() => getTaskFlowMessage(fullExecutionPlan), [fullExecutionPlan]);
+  const currentWeekdayIndex = useMemo(() => new Date(clockTick).getDay(), [clockTick]);
+  const multiDayCalendarMode = useMemo(
+    () => Boolean(fullExecutionPlan && isMultiDayPlan(fullExecutionPlan) && lastRequestWantedCalendar),
+    [fullExecutionPlan, lastRequestWantedCalendar],
+  );
+  const taskFlowMessage = useMemo(() => {
+    if (multiDayCalendarMode) {
+      return "Multi-day schedules live in Calendar right now. Import this plan there to place every block across days.";
+    }
+
+    return getTaskFlowMessage(fullExecutionPlan);
+  }, [fullExecutionPlan, multiDayCalendarMode]);
   const executionPlan = useMemo(() => {
     if (!fullExecutionPlan) {
       return null;
+    }
+
+    if (multiDayCalendarMode) {
+      return {
+        ...fullExecutionPlan,
+        blocks: [],
+      };
     }
 
     const filteredBlocks = fullExecutionPlan.blocks
@@ -494,6 +640,13 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
       };
     }
 
+    const schoolAdjustedBlocks = applySchoolWindowToBlocks(filteredBlocks, {
+      enabled: activePlanSource === "live" && preferences.schoolEnabled,
+      weekdayIndex: currentWeekdayIndex,
+      schoolStartTime: preferences.schoolStartTime,
+      schoolEndTime: preferences.schoolEndTime,
+    });
+
     if (
       activePlanSource !== "live" ||
       timerRunning ||
@@ -501,24 +654,24 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
     ) {
       return {
         ...fullExecutionPlan,
-        blocks: filteredBlocks,
+        blocks: schoolAdjustedBlocks,
       };
     }
 
-    const firstPendingIndex = filteredBlocks.findIndex((block) => block.status === "pending");
+    const firstPendingIndex = schoolAdjustedBlocks.findIndex((block) => block.status === "pending");
     if (firstPendingIndex === -1) {
       return {
         ...fullExecutionPlan,
-        blocks: filteredBlocks,
+        blocks: schoolAdjustedBlocks,
       };
     }
 
-    const firstPendingBlock = filteredBlocks[firstPendingIndex];
+    const firstPendingBlock = schoolAdjustedBlocks[firstPendingIndex];
     const firstPendingKey = `${fullExecutionPlan.plan_id}:${firstPendingBlock.id}`;
     if ((blockElapsedSeconds[firstPendingKey] || 0) > 0) {
       return {
         ...fullExecutionPlan,
-        blocks: filteredBlocks,
+        blocks: schoolAdjustedBlocks,
       };
     }
 
@@ -526,7 +679,7 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
     if (scheduledMinutes === null) {
       return {
         ...fullExecutionPlan,
-        blocks: filteredBlocks,
+        blocks: schoolAdjustedBlocks,
       };
     }
 
@@ -536,13 +689,13 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
     if (!shiftMinutes) {
       return {
         ...fullExecutionPlan,
-        blocks: filteredBlocks,
+        blocks: schoolAdjustedBlocks,
       };
     }
 
     return {
       ...fullExecutionPlan,
-      blocks: filteredBlocks.map((block, index) => {
+      blocks: schoolAdjustedBlocks.map((block, index) => {
         if (index < firstPendingIndex || block.status !== "pending") {
           return block;
         }
@@ -562,7 +715,12 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
     blockElapsedSeconds,
     clockTick,
     currentWeekdayLabel,
+    currentWeekdayIndex,
     fullExecutionPlan,
+    multiDayCalendarMode,
+    preferences.schoolEnabled,
+    preferences.schoolEndTime,
+    preferences.schoolStartTime,
     timerRunning,
   ]);
   const taskFlowHistoryRuns = useMemo(
@@ -648,6 +806,54 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
       }),
     [activeRunId, blockElapsedSeconds, currentTimerKey, executionPlan, taskFlowHistoryRuns],
   );
+  const activePlanAlreadyInCalendar = useMemo(() => {
+    const planKey = fullExecutionPlan?.plan_id;
+    if (!planKey) {
+      return false;
+    }
+
+    return calendarEvents.some((event) => event.sourcePlanKey === planKey);
+  }, [calendarEvents, fullExecutionPlan]);
+  const shouldPromptCalendarImport = Boolean(
+    fullExecutionPlan &&
+      !activePlanAlreadyInCalendar &&
+      (lastRequestWantedCalendar || fullExecutionPlan.timeline_mode === "multi_day"),
+  );
+  const calendarSections = useMemo(() => {
+    const today = new Date();
+    const horizon = new Date(today);
+    horizon.setDate(horizon.getDate() + 60);
+    const upcomingEvents = calendarEvents.filter((event) => {
+      const eventDate = new Date(`${event.eventDate}T12:00:00`);
+      if (Number.isNaN(eventDate.getTime())) {
+        return false;
+      }
+
+      return eventDate >= new Date(today.getFullYear(), today.getMonth(), today.getDate()) && eventDate <= horizon;
+    });
+
+    const holidayMap = new Map<string, string>();
+    const years = new Set([today.getFullYear(), horizon.getFullYear()]);
+    for (const year of years) {
+      for (const [date, label] of getUSHolidaysForYear(year)) {
+        const holidayDate = new Date(`${date}T12:00:00`);
+        if (holidayDate >= new Date(today.getFullYear(), today.getMonth(), today.getDate()) && holidayDate <= horizon) {
+          holidayMap.set(date, label);
+        }
+      }
+    }
+
+    const dateKeys = new Set<string>([...upcomingEvents.map((event) => event.eventDate), ...holidayMap.keys()]);
+    return [...dateKeys]
+      .sort((left, right) => left.localeCompare(right))
+      .map((date) => ({
+        date,
+        holidayLabel: holidayMap.get(date) || null,
+        events: upcomingEvents
+          .filter((event) => event.eventDate === date)
+          .sort((left, right) => `${left.startTime || "99:99"}${left.title}`.localeCompare(`${right.startTime || "99:99"}${right.title}`)),
+      }));
+  }, [calendarEvents]);
 
   useEffect(() => {
     const interval = window.setInterval(() => {
@@ -737,6 +943,19 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
       setSelectedHistoryRunId(null);
     } finally {
       setHistoryLoading(false);
+    }
+  }, [supabase, viewer.id]);
+
+  const refreshCalendarEvents = useCallback(async () => {
+    setCalendarLoading(true);
+    try {
+      const events = await loadCalendarEvents({
+        supabase,
+        userId: viewer.id,
+      });
+      setCalendarEvents(events);
+    } finally {
+      setCalendarLoading(false);
     }
   }, [supabase, viewer.id]);
 
@@ -905,6 +1124,44 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
       window.cancelAnimationFrame(frame);
     };
   }, [supabase, viewer.id]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const frame = window.requestAnimationFrame(() => {
+      if (!cancelled) {
+        setCalendarLoading(true);
+      }
+    });
+    void loadCalendarEvents({
+      supabase,
+      userId: viewer.id,
+    })
+      .then((events) => {
+        if (!cancelled) {
+          setCalendarEvents(events);
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setCalendarLoading(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+      window.cancelAnimationFrame(frame);
+    };
+  }, [supabase, viewer.id]);
+
+  useEffect(() => {
+    const frame = window.requestAnimationFrame(() => {
+      setLockInModeEnabled(false);
+    });
+
+    return () => {
+      window.cancelAnimationFrame(frame);
+    };
+  }, [currentTimerKey]);
 
   useEffect(() => {
     if (!timerRunning || !currentTimerKey || timerBlockKey !== currentTimerKey) {
@@ -1541,6 +1798,34 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
     }
   }, []);
 
+  async function handleImportCurrentPlanToCalendar() {
+    if (!fullExecutionPlan) {
+      return;
+    }
+
+    setCalendarImporting(true);
+    try {
+      await importPlanToCalendar({
+        supabase,
+        userId: viewer.id,
+        plan: fullExecutionPlan,
+      });
+      setCalendarStatus("Current plan added to Calendar.");
+      await refreshCalendarEvents();
+    } finally {
+      setCalendarImporting(false);
+    }
+  }
+
+  async function handleDeleteCalendarEntry(eventId: string) {
+    await deleteCalendarEvent({
+      supabase,
+      userId: viewer.id,
+      eventId,
+    });
+    await refreshCalendarEvents();
+  }
+
   async function handleSend() {
     if (!input.trim() || isLoading) {
       return;
@@ -1551,6 +1836,7 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
     }
 
     const text = input.trim();
+    setLastRequestWantedCalendar(Boolean(buildCalendarIntentContext(text)));
     const historyContext = buildPlannerHistoryContext({
       runs: plannerHistory,
       userText: text,
@@ -1578,6 +1864,7 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
       stopListening({ preserveDraft: false });
     }
 
+    setLastRequestWantedCalendar(Boolean(buildCalendarIntentContext(text)));
     lastUserPromptRef.current = text;
     setHasStarted(true);
     setShowHistoryPlan(false);
@@ -1612,6 +1899,9 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
     setPlanStatusOverrides({});
     setPlanProgressOverrides({});
     setPreferencesOpen(false);
+    setCalendarOpen(false);
+    setCalendarStatus(null);
+    setLastRequestWantedCalendar(false);
     setSelectedHistoryRunId(null);
     setShowHistoryPlan(false);
     setTimerRunning(false);
@@ -1619,12 +1909,18 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
     setTimerBlockKey(null);
     setBlockElapsedSeconds({});
     setTimerAlert(null);
+    setLockInModeEnabled(false);
     alertedTimerBlockKeyRef.current = null;
   }
 
   function openPreferences() {
     setPreferenceDraft(preferences);
     setPreferencesOpen(true);
+  }
+
+  function openCalendar() {
+    setCalendarStatus(null);
+    setCalendarOpen(true);
   }
 
   async function handleSavePreferences() {
@@ -1706,6 +2002,13 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
       actions={
         <>
           <button
+            onClick={openCalendar}
+            className="rounded-full border border-white/10 bg-white/6 px-3 py-2 text-xs text-white/70 transition hover:border-white/20 hover:bg-white/10 hover:text-white"
+            type="button"
+          >
+            Calendar
+          </button>
+          <button
             onClick={openPreferences}
             className="rounded-full border border-white/10 bg-white/6 px-3 py-2 text-xs text-white/70 transition hover:border-white/20 hover:bg-white/10 hover:text-white"
             type="button"
@@ -1779,6 +2082,35 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
                 >
                   Dismiss
                 </button>
+              </div>
+            </div>
+          ) : null}
+          {shouldPromptCalendarImport ? (
+            <div className="px-4 pb-3 md:px-6">
+              <div className="flex flex-wrap items-center justify-between gap-3 rounded-[22px] border border-sky-300/20 bg-sky-300/10 px-4 py-3 text-left">
+                <div>
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-sky-100/80">Calendar-ready plan</p>
+                  <p className="mt-1 text-sm font-medium text-white">
+                    This plan looks better on the calendar. Want Verge to place the full schedule across dates now?
+                  </p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={openCalendar}
+                    className="rounded-full border border-white/10 bg-white/8 px-3 py-1.5 text-[11px] text-white/80 transition hover:border-white/20 hover:bg-white/12 hover:text-white"
+                    type="button"
+                  >
+                    View calendar
+                  </button>
+                  <button
+                    onClick={() => void handleImportCurrentPlanToCalendar()}
+                    disabled={calendarImporting}
+                    className="rounded-full bg-white px-3 py-1.5 text-[11px] font-semibold text-zinc-900 transition hover:bg-white/90 disabled:cursor-default disabled:opacity-40"
+                    type="button"
+                  >
+                    {calendarImporting ? "Adding…" : "Add to calendar"}
+                  </button>
+                </div>
               </div>
             </div>
           ) : null}
@@ -1886,6 +2218,132 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
           </p>
         </footer>
       </section>
+
+      {calendarOpen ? (
+        <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/45 px-4 py-8 backdrop-blur-sm">
+          <div className="flex max-h-[85vh] w-full max-w-4xl flex-col overflow-hidden rounded-[28px] border border-white/10 bg-[#0b0e13]/95 shadow-[0_32px_120px_rgba(0,0,0,0.5)]">
+            <div className="flex items-start justify-between gap-4 border-b border-white/8 px-5 py-5">
+              <div>
+                <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-sky-200/80">Calendar</p>
+                <h3 className="mt-2 text-xl font-semibold text-white">Verge calendar</h3>
+                <p className="mt-2 max-w-2xl text-sm leading-6 text-white/55">
+                  Use this for multi-day plans, fixed commitments, workouts, and everything else that belongs on actual dates.
+                </p>
+              </div>
+              <button
+                onClick={() => setCalendarOpen(false)}
+                className="rounded-full border border-white/10 bg-white/6 px-3 py-1.5 text-xs text-white/70 transition hover:border-white/20 hover:bg-white/10 hover:text-white"
+                type="button"
+              >
+                Close
+              </button>
+            </div>
+
+            <div className="flex flex-wrap items-center justify-between gap-3 border-b border-white/8 px-5 py-4">
+              <div>
+                <p className="text-sm font-semibold text-white/90">
+                  {fullExecutionPlan ? fullExecutionPlan.scope_label : "No current plan selected"}
+                </p>
+                <p className="mt-1 text-xs text-white/45">
+                  Holidays are pre-labeled. Imported plan blocks keep their own colors by type.
+                </p>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => void refreshCalendarEvents()}
+                  className="rounded-full border border-white/10 bg-white/6 px-3 py-2 text-xs text-white/70 transition hover:border-white/20 hover:bg-white/10 hover:text-white"
+                  type="button"
+                >
+                  Refresh
+                </button>
+                <button
+                  onClick={() => void handleImportCurrentPlanToCalendar()}
+                  disabled={!fullExecutionPlan || calendarImporting}
+                  className="rounded-full bg-white px-3 py-2 text-xs font-semibold text-zinc-900 transition hover:bg-white/90 disabled:cursor-default disabled:opacity-40"
+                  type="button"
+                >
+                  {calendarImporting ? "Importing…" : "Add current plan"}
+                </button>
+              </div>
+            </div>
+
+            <div className="min-h-0 flex-1 overflow-y-auto px-5 py-5" style={{ scrollbarWidth: "thin" }}>
+              {calendarStatus ? (
+                <div className="mb-4 rounded-[20px] border border-emerald-300/20 bg-emerald-300/10 px-4 py-3 text-sm text-emerald-100">
+                  {calendarStatus}
+                </div>
+              ) : null}
+
+              {calendarLoading ? (
+                <div className="rounded-[24px] border border-white/10 bg-white/[0.04] px-5 py-6 text-sm text-white/58">
+                  Loading calendar events…
+                </div>
+              ) : calendarSections.length ? (
+                <div className="space-y-4">
+                  {calendarSections.map((section) => (
+                    <section key={section.date} className="rounded-[24px] border border-white/10 bg-white/[0.04] p-4">
+                      <div className="flex flex-wrap items-center justify-between gap-3">
+                        <div>
+                          <p className="text-sm font-semibold text-white">{formatCalendarDateHeading(section.date)}</p>
+                          <p className="mt-1 text-[11px] text-white/40">{section.date}</p>
+                        </div>
+                        {section.holidayLabel ? (
+                          <span className="rounded-full border border-yellow-300/20 bg-yellow-300/10 px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-yellow-100">
+                            {section.holidayLabel}
+                          </span>
+                        ) : null}
+                      </div>
+
+                      {section.events.length ? (
+                        <div className="mt-4 space-y-3">
+                          {section.events.map((event) => (
+                            <div
+                              key={event.id}
+                              className="flex items-start justify-between gap-3 rounded-[20px] border border-white/10 bg-white/[0.05] px-4 py-3"
+                            >
+                              <div className="min-w-0 flex-1">
+                                <div className="flex items-center gap-2">
+                                  <span
+                                    className="h-2.5 w-2.5 rounded-full"
+                                    style={{ backgroundColor: event.color }}
+                                  />
+                                  <p className="truncate text-sm font-semibold text-white/92">{event.title}</p>
+                                  <span className="rounded-full border border-white/10 bg-white/6 px-2 py-1 text-[10px] uppercase tracking-[0.14em] text-white/55">
+                                    {event.kind}
+                                  </span>
+                                </div>
+                                <p className="mt-2 text-xs text-white/45">
+                                  {formatCalendarTimeRange(event.startTime, event.endTime)}
+                                </p>
+                                {event.notes ? (
+                                  <p className="mt-2 text-xs leading-5 text-white/55">{event.notes}</p>
+                                ) : null}
+                              </div>
+                              <button
+                                onClick={() => void handleDeleteCalendarEntry(event.id)}
+                                className="rounded-full border border-red-300/20 bg-red-300/10 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.16em] text-red-100 transition hover:bg-red-300/20"
+                                type="button"
+                              >
+                                Remove
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <p className="mt-4 text-sm text-white/55">No events on this date yet.</p>
+                      )}
+                    </section>
+                  ))}
+                </div>
+              ) : (
+                <div className="rounded-[24px] border border-white/10 bg-white/[0.04] px-5 py-6 text-sm leading-6 text-white/58">
+                  No calendar events yet. Ask Kai for a multi-day plan or tap <span className="font-semibold text-white/80">Add current plan</span> to place everything on dates.
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {preferencesOpen ? (
         <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/45 px-4 py-8 backdrop-blur-sm">
@@ -1997,6 +2455,64 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
                 </select>
               </label>
 
+              <div className="rounded-[22px] border border-white/10 bg-white/[0.04] px-4 py-3 md:col-span-2">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-white/35">Weekday school hours</p>
+                    <p className="mt-2 text-sm leading-6 text-white/55">
+                      Kai will treat school as a fixed Monday–Friday commitment and avoid scheduling in-app work inside that window.
+                    </p>
+                  </div>
+                  <label className="inline-flex items-center gap-2 text-xs text-white/70">
+                    <input
+                      type="checkbox"
+                      checked={preferenceDraft.schoolEnabled}
+                      onChange={(event) =>
+                        setPreferenceDraft((currentValue) => ({
+                          ...currentValue,
+                          schoolEnabled: event.target.checked,
+                        }))
+                      }
+                      className="h-4 w-4 rounded border-white/20 bg-transparent"
+                    />
+                    Enable
+                  </label>
+                </div>
+
+                <div className="mt-4 grid gap-4 md:grid-cols-2">
+                  <label>
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-white/35">School starts</p>
+                    <input
+                      type="time"
+                      value={preferenceDraft.schoolStartTime ?? ""}
+                      disabled={!preferenceDraft.schoolEnabled}
+                      onChange={(event) =>
+                        setPreferenceDraft((currentValue) => ({
+                          ...currentValue,
+                          schoolStartTime: event.target.value || null,
+                        }))
+                      }
+                      className="mt-3 w-full bg-transparent text-sm text-white outline-none disabled:opacity-40"
+                    />
+                  </label>
+                  <label>
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-white/35">School ends</p>
+                    <input
+                      type="time"
+                      value={preferenceDraft.schoolEndTime ?? ""}
+                      disabled={!preferenceDraft.schoolEnabled}
+                      onChange={(event) =>
+                        setPreferenceDraft((currentValue) => ({
+                          ...currentValue,
+                          schoolEndTime: event.target.value || null,
+                        }))
+                      }
+                      className="mt-3 w-full bg-transparent text-sm text-white outline-none disabled:opacity-40"
+                    />
+                  </label>
+                </div>
+              </div>
+
               <label className="rounded-[22px] border border-white/10 bg-white/[0.04] px-4 py-3 md:col-span-2">
                 <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-white/35">General planning notes</p>
                 <textarea
@@ -2056,10 +2572,12 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
         timerRunning={timerRunning}
         timerProgressPercent={timerProgressPercent}
         activeRunSource={activePlanSource}
+        lockInModeEnabled={lockInModeEnabled}
         onUpdateBlockStatus={handleUpdateBlockStatus}
         onStartTimer={handleStartTimer}
         onPauseTimer={handlePauseTimer}
         onResetTimer={handleResetTimer}
+        onToggleLockInMode={() => setLockInModeEnabled((currentValue) => !currentValue)}
         onSelectHistoryRun={handleSelectHistoryRun}
         onDeleteHistoryRun={handleDeleteHistoryRun}
         onReturnToLivePlan={handleReturnToLivePlan}

@@ -4,6 +4,9 @@ export type UserPreferences = {
   focusMinutes: number | null;
   wakeTime: string | null;
   sleepTime: string | null;
+  schoolEnabled: boolean;
+  schoolStartTime: string | null;
+  schoolEndTime: string | null;
   peakFocus: "morning" | "mid-morning" | "afternoon" | "evening" | "unknown";
   lowEnergy: "morning" | "afternoon" | "evening" | "unknown";
   notes: string;
@@ -14,6 +17,9 @@ type PreferenceRow = {
   focus_minutes: number | null;
   wake_time: string | null;
   sleep_time: string | null;
+  school_enabled: boolean | null;
+  school_start_time: string | null;
+  school_end_time: string | null;
   peak_focus: UserPreferences["peakFocus"];
   low_energy: UserPreferences["lowEnergy"];
   notes: string | null;
@@ -24,6 +30,9 @@ type PreferenceInsertRow = {
   focus_minutes: number | null;
   wake_time: string | null;
   sleep_time: string | null;
+  school_enabled: boolean;
+  school_start_time: string | null;
+  school_end_time: string | null;
   peak_focus: UserPreferences["peakFocus"];
   low_energy: UserPreferences["lowEnergy"];
   notes: string | null;
@@ -36,6 +45,9 @@ export function buildDefaultPreferences(): UserPreferences {
     focusMinutes: 90,
     wakeTime: null,
     sleepTime: null,
+    schoolEnabled: false,
+    schoolStartTime: null,
+    schoolEndTime: null,
     peakFocus: "unknown",
     lowEnergy: "unknown",
     notes: "",
@@ -51,6 +63,9 @@ export function buildPreferenceContext(preferences: UserPreferences | null) {
     "Authoritative saved user preferences for this session:",
     "Use these immediately unless the user explicitly overrides them later in chat.",
     "If the user asks what their bedtime, wake time, focus length, or energy window is, answer from this data directly.",
+    preferences.schoolEnabled && preferences.schoolStartTime && preferences.schoolEndTime
+      ? `- weekday school hours: ${preferences.schoolStartTime} to ${preferences.schoolEndTime}. Treat this as a fixed Monday-through-Friday commitment and do not schedule actionable work inside it.`
+      : null,
     preferences.focusMinutes ? `- optimal focus block: ${preferences.focusMinutes} minutes` : null,
     preferences.wakeTime ? `- wake time: ${preferences.wakeTime}` : null,
     preferences.sleepTime ? `- bedtime / sleep time: ${preferences.sleepTime}` : null,
@@ -101,6 +116,9 @@ function normalizePreferences(raw: Partial<UserPreferences> | null | undefined):
         : buildDefaultPreferences().focusMinutes,
     wakeTime: raw?.wakeTime || null,
     sleepTime: raw?.sleepTime || null,
+    schoolEnabled: Boolean(raw?.schoolEnabled && raw?.schoolStartTime && raw?.schoolEndTime),
+    schoolStartTime: raw?.schoolStartTime || null,
+    schoolEndTime: raw?.schoolEndTime || null,
     peakFocus:
       raw?.peakFocus === "morning" ||
       raw?.peakFocus === "mid-morning" ||
@@ -125,6 +143,9 @@ function normalizePreferenceRow(row: PreferenceRow | null): UserPreferences | nu
     focusMinutes: row.focus_minutes,
     wakeTime: row.wake_time,
     sleepTime: row.sleep_time,
+    schoolEnabled: Boolean(row.school_enabled && row.school_start_time && row.school_end_time),
+    schoolStartTime: row.school_start_time,
+    schoolEndTime: row.school_end_time,
     peakFocus: row.peak_focus,
     lowEnergy: row.low_energy,
     notes: row.notes || "",
@@ -150,7 +171,9 @@ export async function loadUserPreferences({
 
   try {
     const { data, error } = await userPreferencesTable(supabase)
-      .select("user_id, focus_minutes, wake_time, sleep_time, peak_focus, low_energy, notes")
+      .select(
+        "user_id, focus_minutes, wake_time, sleep_time, school_enabled, school_start_time, school_end_time, peak_focus, low_energy, notes",
+      )
       .eq("user_id", userId)
       .maybeSingle();
 
@@ -188,6 +211,9 @@ export async function saveUserPreferences({
       focus_minutes: normalized.focusMinutes,
       wake_time: normalized.wakeTime,
       sleep_time: normalized.sleepTime,
+      school_enabled: normalized.schoolEnabled,
+      school_start_time: normalized.schoolEnabled ? normalized.schoolStartTime : null,
+      school_end_time: normalized.schoolEnabled ? normalized.schoolEndTime : null,
       peak_focus: normalized.peakFocus,
       low_energy: normalized.lowEnergy,
       notes: normalized.notes || null,

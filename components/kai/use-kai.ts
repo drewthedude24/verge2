@@ -3,6 +3,7 @@
 import { useCallback, useRef, useState } from "react";
 import { parseKaiResponse, type KaiUserProfile } from "@/lib/kai-prompt";
 import { buildKaiApiUrl } from "@/lib/kai-api";
+import { buildCalendarIntentContext } from "@/lib/calendar-store";
 
 export interface Message {
   id: string;
@@ -57,6 +58,7 @@ export function useKai() {
       const historyContext = options?.historyContext?.trim() || null;
       const preferenceContext = options?.preferenceContext?.trim() || null;
       const currentTimeContext = buildCurrentTimeContext();
+      const calendarIntentContext = buildCalendarIntentContext(cleanedText);
 
       const userMessage: Message = {
         id: crypto.randomUUID(),
@@ -92,6 +94,7 @@ export function useKai() {
             historyContext,
             preferenceContext,
             currentTimeContext,
+            calendarIntentContext,
           }),
           signal: abortRef.current.signal,
         });

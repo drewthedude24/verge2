@@ -42,10 +42,39 @@ create table if not exists public.user_preferences (
   focus_minutes integer,
   wake_time text,
   sleep_time text,
+  school_enabled boolean not null default false,
+  school_start_time text,
+  school_end_time text,
   peak_focus text not null default 'unknown',
   low_energy text not null default 'unknown',
   notes text,
   updated_at timestamptz not null default timezone('utc', now())
+);
+
+alter table public.user_preferences add column if not exists school_enabled boolean not null default false;
+alter table public.user_preferences add column if not exists school_start_time text;
+alter table public.user_preferences add column if not exists school_end_time text;
+
+create table if not exists public.calendar_events (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references auth.users(id) on delete cascade,
+  event_key text not null,
+  title text not null,
+  event_date date not null,
+  start_time text,
+  end_time text,
+  kind text not null,
+  color text,
+  status text not null default 'scheduled',
+  source_plan_key text,
+  source_block_id text,
+  external_provider text not null default 'local',
+  external_event_id text,
+  notes text,
+  metadata jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default timezone('utc', now()),
+  updated_at timestamptz not null default timezone('utc', now()),
+  unique (user_id, event_key)
 );
 
 create index if not exists planner_runs_user_created_idx on public.planner_runs (user_id, created_at desc);
@@ -55,10 +84,12 @@ grant usage on schema public to authenticated;
 grant select, insert, update, delete on table public.planner_runs to authenticated;
 grant select, insert, update, delete on table public.planner_blocks to authenticated;
 grant select, insert, update, delete on table public.user_preferences to authenticated;
+grant select, insert, update, delete on table public.calendar_events to authenticated;
 
 alter table public.planner_runs enable row level security;
 alter table public.planner_blocks enable row level security;
 alter table public.user_preferences enable row level security;
+alter table public.calendar_events enable row level security;
 
 drop policy if exists "Users can read their own planner runs" on public.planner_runs;
 create policy "Users can read their own planner runs"
@@ -178,6 +209,35 @@ create policy "Users can update their own preferences"
 drop policy if exists "Users can delete their own preferences" on public.user_preferences;
 create policy "Users can delete their own preferences"
   on public.user_preferences
+  for delete
+  to authenticated
+  using (auth.uid() = user_id);
+
+drop policy if exists "Users can read their own calendar events" on public.calendar_events;
+create policy "Users can read their own calendar events"
+  on public.calendar_events
+  for select
+  to authenticated
+  using (auth.uid() = user_id);
+
+drop policy if exists "Users can insert their own calendar events" on public.calendar_events;
+create policy "Users can insert their own calendar events"
+  on public.calendar_events
+  for insert
+  to authenticated
+  with check (auth.uid() = user_id);
+
+drop policy if exists "Users can update their own calendar events" on public.calendar_events;
+create policy "Users can update their own calendar events"
+  on public.calendar_events
+  for update
+  to authenticated
+  using (auth.uid() = user_id)
+  with check (auth.uid() = user_id);
+
+drop policy if exists "Users can delete their own calendar events" on public.calendar_events;
+create policy "Users can delete their own calendar events"
+  on public.calendar_events
   for delete
   to authenticated
   using (auth.uid() = user_id);

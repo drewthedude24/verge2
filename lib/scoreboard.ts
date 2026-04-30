@@ -174,7 +174,16 @@ export function buildAccountScoreboard({
       })
     : [];
 
-  return summarizeEntries([...filteredHistoryEntries, ...activeEntries]);
+  const summary = summarizeEntries([...filteredHistoryEntries, ...activeEntries]);
+
+  if (!activePlan && !activeRunId) {
+    return {
+      ...summary,
+      totalAvailablePoints: summary.totalEarnedPoints,
+    };
+  }
+
+  return summary;
 }
 
 function isRunEligibleForLeaderboard(createdAt: string) {

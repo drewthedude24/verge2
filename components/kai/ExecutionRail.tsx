@@ -20,10 +20,12 @@ interface ExecutionRailProps {
   timerRunning: boolean;
   timerProgressPercent: number;
   activeRunSource: "live" | "history" | "none";
+  lockInModeEnabled: boolean;
   onUpdateBlockStatus: (blockId: string, status: KaiExecutionBlock["status"]) => void;
   onStartTimer: () => void;
   onPauseTimer: () => void;
   onResetTimer: () => void;
+  onToggleLockInMode: () => void;
   onSelectHistoryRun: (runId: string) => void;
   onDeleteHistoryRun: (runId: string) => void;
   onReturnToLivePlan: () => void;
@@ -122,10 +124,12 @@ export default function ExecutionRail({
   timerRunning,
   timerProgressPercent,
   activeRunSource,
+  lockInModeEnabled,
   onUpdateBlockStatus,
   onStartTimer,
   onPauseTimer,
   onResetTimer,
+  onToggleLockInMode,
   onSelectHistoryRun,
   onDeleteHistoryRun,
   onReturnToLivePlan,
@@ -251,6 +255,17 @@ export default function ExecutionRail({
                   Reset
                 </button>
                 <button
+                  onClick={onToggleLockInMode}
+                  className={`rounded-full border px-3 py-2 text-xs transition ${
+                    lockInModeEnabled
+                      ? "border-red-300/20 bg-red-300/10 text-red-100 hover:bg-red-300/20"
+                      : "border-white/10 bg-white/6 text-white/70 hover:border-white/20 hover:bg-white/10 hover:text-white"
+                  }`}
+                  type="button"
+                >
+                  {lockInModeEnabled ? "Lock-in on" : "Turn on lock-in mode"}
+                </button>
+                <button
                   onClick={() => onUpdateBlockStatus(currentBlock.id, "completed")}
                   className="rounded-full border border-emerald-300/20 bg-emerald-300/10 px-3 py-2 text-xs text-emerald-100 transition hover:bg-emerald-300/20"
                   type="button"
@@ -267,6 +282,11 @@ export default function ExecutionRail({
                   </button>
                 ) : null}
               </div>
+              <p className="mt-3 text-[11px] leading-5 text-white/45">
+                {lockInModeEnabled
+                  ? "Lock-in mode is armed for this block. Camera-based focus checks are still optional and will come later."
+                  : "Lock-in mode lets the user opt into future camera-based focus checks for this task."}
+              </p>
             </div>
           </>
         ) : (
@@ -305,6 +325,11 @@ export default function ExecutionRail({
                         </span>
                       ) : null}
                       <span className="text-[11px] text-white/45">{block.date_label || plan?.scope_label}</span>
+                      {block.status === "pending" && block.kind === "task" ? (
+                        <span className="rounded-full border border-white/10 bg-white/6 px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-white/55">
+                          lock-in available
+                        </span>
+                      ) : null}
                     </div>
                     <h4 className="mt-2 text-sm font-semibold text-white/92">{block.title}</h4>
                   </div>
