@@ -18,7 +18,6 @@ import {
   addMinutesToClock,
   getRoundedDelayMinutes,
   getTaskFlowMessage,
-  isMultiDayPlan,
   isPlanActiveToday,
   isTaskFlowEligibleBlock,
   normalizeExecutionSurface,
@@ -488,7 +487,7 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
         execution_surface: normalizeExecutionSurface(block),
       }));
 
-    if (isMultiDayPlan(fullExecutionPlan) || !filteredBlocks.length) {
+    if (!filteredBlocks.length) {
       return {
         ...fullExecutionPlan,
         blocks: [],
@@ -569,15 +568,12 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
   const taskFlowHistoryRuns = useMemo(
     () =>
       plannerHistory.map((run) => {
-        const runPlan = buildExecutionPlanFromHistoryRun(run);
-        const filteredBlocks = isMultiDayPlan(runPlan)
-          ? []
-          : run.blocks
-              .filter((block) => isTaskFlowEligibleBlock(block))
-              .map((block) => ({
-                ...block,
-                execution_surface: normalizeExecutionSurface(block),
-              }));
+        const filteredBlocks = run.blocks
+          .filter((block) => isTaskFlowEligibleBlock(block))
+          .map((block) => ({
+            ...block,
+            execution_surface: normalizeExecutionSurface(block),
+          }));
 
         return {
           ...run,

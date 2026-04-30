@@ -61,11 +61,11 @@ export function getTaskFlowMessage(plan: KaiExecutionPlan | null) {
     return null;
   }
 
-  if (isMultiDayPlan(plan)) {
-    return "Multi-day schedule won't have a task flow yet. Use Kai's text schedule for the day-by-day plan.";
-  }
-
   if (!(plan.blocks || []).some(isTaskFlowEligibleBlock)) {
+    if (isMultiDayPlan(plan)) {
+      return "This multi-day schedule does not have any actionable in-app blocks yet, so Verge is only showing the text plan.";
+    }
+
     return "This schedule is mostly offline or fixed life blocks, so Verge does not have an in-app task flow for it.";
   }
 
