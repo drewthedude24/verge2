@@ -321,6 +321,287 @@ BEHAVIORAL:
 - One gentle flag per issue — never repeat a concern
 `.trim();
 
+const SCHEDULE_TIME_RANGE_PATTERN = /^(\d{1,2}:\d{2})\s*[–-]\s*(\d{1,2}:\d{2})\s*\|\s*(.+)$/;
+const HIGH_PRIORITY_TASK_PATTERN =
+  /\b(test|exam|quiz|deadline|paper|essay|project|midterm|final|interview|presentation|study|calc|calculus|physics|chem|bio|biology|research|draft|outline|submit)\b/i;
+const LOW_PRIORITY_TASK_PATTERN = /\b(review|organize|admin|email|follow up|prep|light)\b/i;
+
+function normalizeClockText(value: string) {
+  const match = value.trim().match(/^(\d{1,2}):(\d{2})$/);
+  if (!match) {
+    return value.trim();
+  }
+
+  return `${match[1].padStart(2, "0")}:${match[2]}`;
+}
+
+function parseClockMinutes(value: string) {
+  const normalized = normalizeClockText(value);
+  const match = normalized.match(/^(\d{2}):(\d{2})$/);
+  if (!match) {
+    return null;
+  }
+
+  return Number(match[1]) * 60 + Number(match[2]);
+}
+
+function sanitizeScheduleLine(line: string) {
+  return line
+    .replace(/^\s*[-*•]\s*/, "")
+    .replace(/\*\*/g, "")
+    .trim();
+}
+
+function slugifyScheduleLabel(value: string) {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 48);
+}
+
+function inferScheduleBlockKind(title: string): KaiExecutionBlock["kind"] {
+  if (/\b(break|stretch|step away)\b/i.test(title)) {
+    return "break";
+  }
+
+  if (/\b(buffer|transition)\b/i.test(title)) {
+    return "buffer";
+  }
+
+  if (/\b(dinner|lunch|breakfast|meal)\b/i.test(title)) {
+    return "meal";
+  }
+
+  if (/\b(wind down|recharge|recovery|reset|rest)\b/i.test(title)) {
+    return "recovery";
+  }
+
+  if (/\b(commute|travel|drive|walk|bus|train|prep)\b/i.test(title)) {
+    return "commute";
+  }
+
+  if (/\b(golf|pickleball|gym|workout|practice)\b/i.test(title)) {
+    return "workout";
+  }
+
+  if (/\b(school|class|lecture|lab|office hours|meeting|work)\b/i.test(title)) {
+    return "fixed";
+  }
+
+  return "task";
+}
+
+function inferSchedulePriorityBand(title: string): "low" | "medium" | "high" {
+  if (HIGH_PRIORITY_TASK_PATTERN.test(title)) {
+    return "high";
+  }
+
+  if (LOW_PRIORITY_TASK_PATTERN.test(title)) {
+    return "low";
+  }
+
+  return "medium";
+}
+
+function inferSchedulePointValue(priorityBand: "low" | "medium" | "high", kind: KaiExecutionBlock["kind"]) {
+  if (kind !== "task") {
+    return 0;
+  }
+
+  switch (priorityBand) {
+    case "high":
+      return 10;
+    case "low":
+      return 3;
+    default:
+      return 6;
+  }
+}
+
+function inferScheduleExecutionSurface(kind: KaiExecutionBlock["kind"], title: string): "in_app" | "offline" | "none" {
+  if (kind === "break" || kind === "buffer" || kind === "meal" || kind === "recovery" || kind === "commute") {
+    return "none";
+  }
+
+  if (kind === "workout") {
+    return "offline";
+  }
+
+  if (kind === "fixed" && /\b(meeting|zoom|call|interview|office hours)\b/i.test(title)) {
+    return "in_app";
+  }
+
+  if (kind === "fixed") {
+    return "offline";
+  }
+
+  return "in_app";
+}
+
+function inferScheduleFocusLevel(kind: KaiExecutionBlock["kind"], title: string): KaiExecutionBlock["focus_level"] {
+  if (kind === "break" || kind === "recovery" || kind === "meal" || kind === "commute") {
+    return "recovery";
+  }
+
+  if (kind === "fixed") {
+    return "fixed";
+  }
+
+  if (/\b(study|exam|test|quiz|research|write|draft|outline|problem set|calc|calculus|physics|bio|biology)\b/i.test(title)) {
+    return "deep";
+  }
+
+  return "light";
+}
+
+function inferScheduleEnergyMatch(startTime: string): KaiExecutionBlock["energy_match"] {
+  const minutes = parseClockMinutes(startTime);
+  if (minutes === null) {
+    return "unknown";
+  }
+
+  if (minutes >= 9 * 60 && minutes < 13 * 60) {
+    return "peak";
+  }
+
+  if (minutes >= 13 * 60 && minutes < 18 * 60) {
+    return "steady";
+  }
+
+  if (minutes >= 18 * 60) {
+    return "low";
+  }
+
+  return "unknown";
+}
+
+function inferScopeLabelFromConversation(conversationText: string) {
+  if (/\b(today|tonight|this afternoon|this evening)\b/i.test(conversationText)) {
+    return "Today";
+  }
+
+  if (/\btomorrow\b/i.test(conversationText)) {
+    return "Tomorrow";
+  }
+
+  if (/\bthis week|week\b/i.test(conversationText)) {
+    return "This week";
+  }
+
+  return "Today";
+}
+
+function synthesizeStructuredDataFromConversation(conversationText: string): KaiUserProfile | null {
+  const lines = conversationText.split("\n").map(sanitizeScheduleLine).filter(Boolean);
+  const blocks: KaiExecutionBlock[] = [];
+
+  for (const line of lines) {
+    const match = line.match(SCHEDULE_TIME_RANGE_PATTERN);
+    if (!match) {
+      continue;
+    }
+
+    const startTime = normalizeClockText(match[1]);
+    const endTime = normalizeClockText(match[2]);
+    const rawBody = match[3].trim();
+    const noteMatch = rawBody.match(/^(.*?)(?:\s*\(([^)]+)\))?$/);
+    const title = (noteMatch?.[1] || rawBody).trim();
+    const notes = noteMatch?.[2]?.trim() || null;
+    const startMinutes = parseClockMinutes(startTime);
+    const endMinutes = parseClockMinutes(endTime);
+    const durationMinutes =
+      startMinutes !== null && endMinutes !== null && endMinutes > startMinutes ? endMinutes - startMinutes : 0;
+    const kind = inferScheduleBlockKind(title);
+    const priorityBand = inferSchedulePriorityBand(title);
+
+    blocks.push({
+      id: `parsed-${slugifyScheduleLabel(title) || `block-${blocks.length + 1}`}-${blocks.length + 1}`,
+      title,
+      kind,
+      date_label: inferScopeLabelFromConversation(conversationText),
+      start_time: startTime,
+      end_time: endTime,
+      duration_minutes: durationMinutes,
+      status: "pending",
+      focus_level: inferScheduleFocusLevel(kind, title),
+      energy_match: inferScheduleEnergyMatch(startTime),
+      priority_band: priorityBand,
+      point_value: inferSchedulePointValue(priorityBand, kind),
+      execution_surface: inferScheduleExecutionSurface(kind, title),
+      can_skip: kind === "task",
+      source_goal: kind === "task" ? title : null,
+      notes,
+    });
+  }
+
+  if (blocks.length < 2) {
+    return null;
+  }
+
+  const fixedCommitments = blocks
+    .filter((block) => block.kind === "fixed")
+    .map((block) => ({
+      label: block.title,
+      type: /\bwork\b/i.test(block.title) ? ("work" as const) : ("class" as const),
+      days: [],
+      start_time: block.start_time,
+      end_time: block.end_time,
+    }));
+
+  const taskGoals = blocks.filter((block) => block.kind === "task").map((block) => block.title);
+  const hobbies = blocks
+    .filter((block) => block.kind === "workout" || block.kind === "meal")
+    .map((block) => block.title);
+
+  return {
+    user_profile: {
+      name: null,
+      fixed_commitments: fixedCommitments,
+      sleep: {
+        bedtime: null,
+        wake_time: null,
+        hours_per_night: null,
+        consistency: "unknown",
+      },
+      energy_pattern: {
+        peak: "unknown",
+        low: "unknown",
+        source: "inferred",
+      },
+      goals: taskGoals,
+      deadlines: taskGoals
+        .filter((title) => /\b(test|exam|quiz|deadline|paper|essay|project|final|midterm)\b/i.test(title))
+        .map((title) => ({
+          label: title,
+          due_date: "",
+          urgency: inferSchedulePriorityBand(title),
+        })),
+      hobbies_and_priorities: hobbies,
+      class_hours_per_week: null,
+      recommended_study_hours_per_week: null,
+      stress_level_signal: "moderate",
+      schedule_conflicts_detected: [],
+      data_completeness: "sufficient",
+      scheduling_principles_applied: ["buffer_zones", "task_batching"],
+    },
+    execution_plan: {
+      plan_id: `parsed-plan-${slugifyScheduleLabel(taskGoals[0] || "day") || "day"}`,
+      scope_label: inferScopeLabelFromConversation(conversationText),
+      timeline_mode: "single_day",
+      status: "ready",
+      timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || null,
+      focus_strategy: "Recovered from Kai's visible text schedule because the structured execution block was missing or incomplete.",
+      blocks,
+    },
+    summary:
+      conversationText
+        .split("\n")
+        .map((line) => sanitizeScheduleLine(line))
+        .find((line) => line && !SCHEDULE_TIME_RANGE_PATTERN.test(line)) || "Recovered schedule from Kai's text response.",
+  };
+}
+
 // Helper to parse Kai's response — splits conversation text from the structured data block
 export function parseKaiResponse(raw: string): {
   conversationText: string;
@@ -341,6 +622,34 @@ export function parseKaiResponse(raw: string): {
     } catch {
       console.warn("[Kai] Failed to parse structured data block:", match[1]);
     }
+  }
+
+  const synthesizedStructuredData = synthesizeStructuredDataFromConversation(conversationText);
+  if (!structuredData) {
+    structuredData = synthesizedStructuredData;
+  } else if ((!structuredData.execution_plan || !(structuredData.execution_plan.blocks || []).length) && synthesizedStructuredData?.execution_plan) {
+    structuredData = {
+      ...structuredData,
+      execution_plan: synthesizedStructuredData.execution_plan,
+      summary: structuredData.summary || synthesizedStructuredData.summary,
+      user_profile: {
+        ...structuredData.user_profile,
+        goals: structuredData.user_profile.goals?.length ? structuredData.user_profile.goals : synthesizedStructuredData.user_profile.goals,
+        deadlines: structuredData.user_profile.deadlines?.length
+          ? structuredData.user_profile.deadlines
+          : synthesizedStructuredData.user_profile.deadlines,
+        fixed_commitments: structuredData.user_profile.fixed_commitments?.length
+          ? structuredData.user_profile.fixed_commitments
+          : synthesizedStructuredData.user_profile.fixed_commitments,
+        hobbies_and_priorities: structuredData.user_profile.hobbies_and_priorities?.length
+          ? structuredData.user_profile.hobbies_and_priorities
+          : synthesizedStructuredData.user_profile.hobbies_and_priorities,
+        data_completeness:
+          structuredData.user_profile.data_completeness === "partial"
+            ? synthesizedStructuredData.user_profile.data_completeness
+            : structuredData.user_profile.data_completeness,
+      },
+    };
   }
 
   return { conversationText, structuredData };
