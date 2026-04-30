@@ -6,12 +6,19 @@ import DesktopShell from "@/components/layout/DesktopShell";
 import type { KaiExecutionBlock } from "@/lib/kai-prompt";
 import {
   buildCalendarIntentContext,
+  buildCalendarEventsFromPlan,
   deleteCalendarEvent,
   getUSHolidaysForYear,
   importPlanToCalendar,
   loadCalendarEvents,
   type CalendarEvent,
 } from "@/lib/calendar-store";
+import {
+  getGoogleCalendarAuthUrl,
+  loadGoogleCalendarStatus,
+  syncGoogleCalendarEvents,
+  type GoogleCalendarStatus,
+} from "@/lib/google-calendar-client";
 import {
   buildExecutionPlanFromHistoryRun,
   buildLocalExecutionPlan,
@@ -40,6 +47,12 @@ import {
   saveUserPreferences,
   type UserPreferences,
 } from "@/lib/preferences-store";
+import {
+  loadLeaderboardPlayers,
+  publishPlayerLiveStatus,
+  upsertUserProfile,
+  type LeaderboardPlayer,
+} from "@/lib/multiplayer-store";
 import { buildAccountScoreboard, buildScoreboardSummary } from "@/lib/scoreboard";
 import { createClient, isSupabaseConfigured } from "@/lib/supabase";
 import { type Message, useKai } from "@/components/kai/use-kai";
@@ -495,6 +508,9 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
   const [calendarImporting, setCalendarImporting] = useState(false);
   const [calendarEvents, setCalendarEvents] = useState<CalendarEvent[]>([]);
   const [calendarStatus, setCalendarStatus] = useState<string | null>(null);
+  const [googleCalendarStatus, setGoogleCalendarStatus] = useState<GoogleCalendarStatus | null>(null);
+  const [googleCalendarLoading, setGoogleCalendarLoading] = useState(false);
+  const [googleCalendarSyncing, setGoogleCalendarSyncing] = useState(false);
   const [lastRequestWantedCalendar, setLastRequestWantedCalendar] = useState(false);
   const [deletingHistoryRunId, setDeletingHistoryRunId] = useState<string | null>(null);
   const [selectedHistoryRunId, setSelectedHistoryRunId] = useState<string | null>(null);
@@ -515,6 +531,8 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
   const [timerAlert, setTimerAlert] = useState<TimerAlertState | null>(null);
   const [clockTick, setClockTick] = useState(() => Date.now());
   const [lockInModeEnabled, setLockInModeEnabled] = useState(false);
+  const [multiplayerPlayers, setMultiplayerPlayers] = useState<LeaderboardPlayer[]>([]);
+  const [multiplayerLoading, setMultiplayerLoading] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const recognitionRef = useRef<SpeechRecognition | null>(null);
@@ -959,6 +977,57 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
     }
   }, [supabase, viewer.id]);
 
+  const getViewerAccessToken = useCallback(async () => {
+    if (!supabase || !viewer.id) {
+      return null;
+    }
+
+    const { data } = await supabase.auth.getSession();
+    return data.session?.access_token || null;
+  }, [supabase, viewer.id]);
+
+  const refreshGoogleCalendarStatus = useCallback(async () => {
+    if (!viewer.id) {
+      setGoogleCalendarStatus(null);
+      return;
+    }
+
+    const accessToken = await getViewerAccessToken();
+    if (!accessToken) {
+      setGoogleCalendarStatus(null);
+      return;
+    }
+
+    setGoogleCalendarLoading(true);
+    try {
+      const status = await loadGoogleCalendarStatus(accessToken);
+      setGoogleCalendarStatus(status);
+    } catch (error) {
+      console.error("[Verge] Failed to load Google Calendar status:", error);
+      setGoogleCalendarStatus(null);
+    } finally {
+      setGoogleCalendarLoading(false);
+    }
+  }, [getViewerAccessToken, viewer.id]);
+
+  const refreshMultiplayerPlayers = useCallback(async () => {
+    if (!supabase || !viewer.id) {
+      setMultiplayerPlayers([]);
+      return;
+    }
+
+    setMultiplayerLoading(true);
+    try {
+      const players = await loadLeaderboardPlayers(supabase);
+      setMultiplayerPlayers(players);
+    } catch (error) {
+      console.error("[Verge] Failed to load multiplayer leaderboard:", error);
+      setMultiplayerPlayers([]);
+    } finally {
+      setMultiplayerLoading(false);
+    }
+  }, [supabase, viewer.id]);
+
   const applyLocalBlockProgress = useCallback(
     ({
       planKey,
@@ -1152,6 +1221,113 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
       window.cancelAnimationFrame(frame);
     };
   }, [supabase, viewer.id]);
+
+  useEffect(() => {
+    if (!calendarOpen) {
+      return;
+    }
+
+    const timeout = window.setTimeout(() => {
+      void refreshGoogleCalendarStatus();
+    }, 0);
+
+    return () => {
+      window.clearTimeout(timeout);
+    };
+  }, [calendarOpen, refreshGoogleCalendarStatus]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    if (!supabase || !viewer.id) {
+      const frame = window.requestAnimationFrame(() => {
+        if (!cancelled) {
+          setMultiplayerPlayers([]);
+        }
+      });
+
+      return () => {
+        cancelled = true;
+        window.cancelAnimationFrame(frame);
+      };
+    }
+
+    const bootstrap = async () => {
+      try {
+        await upsertUserProfile({
+          supabase,
+          userId: viewer.id as string,
+          displayName: viewer.name,
+          email: viewer.email,
+        });
+
+        if (!cancelled) {
+          await refreshMultiplayerPlayers();
+        }
+      } catch (error) {
+        console.error("[Verge] Failed to bootstrap multiplayer profile:", error);
+      }
+    };
+
+    const frame = window.requestAnimationFrame(() => {
+      void bootstrap();
+    });
+
+    const channel = supabase
+      .channel(`verge-live-leaderboard:${viewer.id}`)
+      .on("postgres_changes", { event: "*", schema: "public", table: "player_live_status" }, () => {
+        void refreshMultiplayerPlayers();
+      })
+      .on("postgres_changes", { event: "*", schema: "public", table: "user_profiles" }, () => {
+        void refreshMultiplayerPlayers();
+      })
+      .subscribe();
+
+    return () => {
+      cancelled = true;
+      window.cancelAnimationFrame(frame);
+      void supabase.removeChannel(channel);
+    };
+  }, [refreshMultiplayerPlayers, supabase, viewer.email, viewer.id, viewer.name]);
+
+  useEffect(() => {
+    if (!supabase || !viewer.id) {
+      return;
+    }
+
+    const publishElapsedSeconds = Math.floor(currentTrackedElapsedSeconds / 5) * 5;
+    const timeout = window.setTimeout(() => {
+      void publishPlayerLiveStatus({
+        supabase,
+        userId: viewer.id as string,
+        totalEarnedPoints: accountScoreboard.totalEarnedPoints,
+        totalAvailablePoints: accountScoreboard.totalAvailablePoints,
+        sessionEarnedPoints: scoreboard.totalEarnedPoints,
+        sessionAvailablePoints: scoreboard.totalAvailablePoints,
+        currentTaskTitle: currentBlock?.title || null,
+        currentElapsedSeconds: publishElapsedSeconds,
+        isTimerRunning: timerRunning,
+        lockInMode: lockInModeEnabled,
+      }).catch((error) => {
+        console.error("[Verge] Failed to publish live leaderboard status:", error);
+      });
+    }, 0);
+
+    return () => {
+      window.clearTimeout(timeout);
+    };
+  }, [
+    accountScoreboard.totalAvailablePoints,
+    accountScoreboard.totalEarnedPoints,
+    currentBlock?.title,
+    currentTrackedElapsedSeconds,
+    lockInModeEnabled,
+    scoreboard.totalAvailablePoints,
+    scoreboard.totalEarnedPoints,
+    supabase,
+    timerRunning,
+    viewer.id,
+  ]);
 
   useEffect(() => {
     const frame = window.requestAnimationFrame(() => {
@@ -1817,6 +1993,67 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
     }
   }
 
+  async function handleConnectGoogleCalendar() {
+    const accessToken = await getViewerAccessToken();
+    if (!accessToken) {
+      setCalendarStatus("Sign in first to connect Google Calendar.");
+      return;
+    }
+
+    setCalendarStatus(null);
+    setGoogleCalendarLoading(true);
+    try {
+      const { authUrl } = await getGoogleCalendarAuthUrl(accessToken);
+      window.open(authUrl, "_blank", "noopener,noreferrer");
+      setCalendarStatus("Google sign-in opened in a new tab. Finish the connection there, then hit Refresh.");
+    } catch (error) {
+      console.error("[Verge] Failed to start Google Calendar auth:", error);
+      setCalendarStatus("Google Calendar connection could not start. Check the hosted backend env vars and try again.");
+    } finally {
+      setGoogleCalendarLoading(false);
+    }
+  }
+
+  async function handleSyncCurrentPlanToGoogleCalendar() {
+    if (!fullExecutionPlan) {
+      setCalendarStatus("Create a plan first, then sync it to Google Calendar.");
+      return;
+    }
+
+    const accessToken = await getViewerAccessToken();
+    if (!accessToken) {
+      setCalendarStatus("Sign in first to sync with Google Calendar.");
+      return;
+    }
+
+    const events = buildCalendarEventsFromPlan(fullExecutionPlan);
+    if (!events.length) {
+      setCalendarStatus("There are no calendar blocks to sync for this plan yet.");
+      return;
+    }
+
+    setGoogleCalendarSyncing(true);
+    setCalendarStatus(null);
+    try {
+      const result = await syncGoogleCalendarEvents({
+        accessToken,
+        events,
+        planKey: fullExecutionPlan.plan_id,
+        timeZone:
+          fullExecutionPlan.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone || "America/Chicago",
+      });
+
+      setCalendarStatus(`Synced ${result.syncedCount} events to Google Calendar.`);
+      await refreshCalendarEvents();
+      await refreshGoogleCalendarStatus();
+    } catch (error) {
+      console.error("[Verge] Failed to sync Google Calendar events:", error);
+      setCalendarStatus("Google Calendar sync failed. If this is your first time, connect Google first and try again.");
+    } finally {
+      setGoogleCalendarSyncing(false);
+    }
+  }
+
   async function handleDeleteCalendarEntry(eventId: string) {
     await deleteCalendarEvent({
       supabase,
@@ -1921,6 +2158,7 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
   function openCalendar() {
     setCalendarStatus(null);
     setCalendarOpen(true);
+    void refreshGoogleCalendarStatus();
   }
 
   async function handleSavePreferences() {
@@ -2247,6 +2485,26 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
                 <p className="mt-1 text-xs text-white/45">
                   Holidays are pre-labeled. Imported plan blocks keep their own colors by type.
                 </p>
+                <div className="mt-3 flex flex-wrap items-center gap-2">
+                  <span
+                    className={`rounded-full border px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] ${
+                      googleCalendarStatus?.connected
+                        ? "border-emerald-300/20 bg-emerald-300/10 text-emerald-100"
+                        : "border-white/10 bg-white/6 text-white/55"
+                    }`}
+                  >
+                    {googleCalendarLoading
+                      ? "Checking Google…"
+                      : googleCalendarStatus?.connected
+                        ? `Google connected${googleCalendarStatus.email ? ` · ${googleCalendarStatus.email}` : ""}`
+                        : "Google not connected"}
+                  </span>
+                  {googleCalendarStatus?.calendarId ? (
+                    <span className="rounded-full border border-white/10 bg-white/6 px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-white/55">
+                      {googleCalendarStatus.calendarId}
+                    </span>
+                  ) : null}
+                </div>
               </div>
               <div className="flex items-center gap-2">
                 <button
@@ -2257,12 +2515,28 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
                   Refresh
                 </button>
                 <button
+                  onClick={() => void handleConnectGoogleCalendar()}
+                  disabled={googleCalendarLoading}
+                  className="rounded-full border border-sky-300/20 bg-sky-300/10 px-3 py-2 text-xs font-semibold text-sky-100 transition hover:bg-sky-300/20 disabled:cursor-default disabled:opacity-40"
+                  type="button"
+                >
+                  {googleCalendarStatus?.connected ? "Reconnect Google" : "Connect Google"}
+                </button>
+                <button
                   onClick={() => void handleImportCurrentPlanToCalendar()}
                   disabled={!fullExecutionPlan || calendarImporting}
                   className="rounded-full bg-white px-3 py-2 text-xs font-semibold text-zinc-900 transition hover:bg-white/90 disabled:cursor-default disabled:opacity-40"
                   type="button"
                 >
                   {calendarImporting ? "Importing…" : "Add current plan"}
+                </button>
+                <button
+                  onClick={() => void handleSyncCurrentPlanToGoogleCalendar()}
+                  disabled={!fullExecutionPlan || googleCalendarSyncing || !googleCalendarStatus?.connected}
+                  className="rounded-full border border-emerald-300/20 bg-emerald-300/10 px-3 py-2 text-xs font-semibold text-emerald-100 transition hover:bg-emerald-300/20 disabled:cursor-default disabled:opacity-40"
+                  type="button"
+                >
+                  {googleCalendarSyncing ? "Syncing…" : "Sync to Google"}
                 </button>
               </div>
             </div>
@@ -2584,6 +2858,9 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
         canReturnToLivePlan={Boolean(currentGeneratedPlan)}
         leaderboardName={viewer.isGuest ? "You" : viewer.name}
         scoreboard={accountScoreboard}
+        multiplayerPlayers={multiplayerPlayers}
+        multiplayerLoading={multiplayerLoading}
+        viewerId={viewer.id}
         deletingHistoryRunId={deletingHistoryRunId}
         protectedHistoryRunId={activeRunId}
       />

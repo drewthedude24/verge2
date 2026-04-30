@@ -77,6 +77,38 @@ create table if not exists public.calendar_events (
   unique (user_id, event_key)
 );
 
+create table if not exists public.google_calendar_connections (
+  user_id uuid primary key references auth.users(id) on delete cascade,
+  google_email text,
+  calendar_id text not null default 'primary',
+  access_token text not null,
+  refresh_token text,
+  expires_at timestamptz,
+  scope text,
+  created_at timestamptz not null default timezone('utc', now()),
+  updated_at timestamptz not null default timezone('utc', now())
+);
+
+create table if not exists public.user_profiles (
+  user_id uuid primary key references auth.users(id) on delete cascade,
+  display_name text,
+  email text,
+  updated_at timestamptz not null default timezone('utc', now())
+);
+
+create table if not exists public.player_live_status (
+  user_id uuid primary key references auth.users(id) on delete cascade,
+  total_earned_points integer not null default 0,
+  total_available_points integer not null default 0,
+  session_earned_points integer not null default 0,
+  session_available_points integer not null default 0,
+  current_task_title text,
+  current_elapsed_seconds integer not null default 0,
+  is_timer_running boolean not null default false,
+  lock_in_mode boolean not null default false,
+  updated_at timestamptz not null default timezone('utc', now())
+);
+
 create index if not exists planner_runs_user_created_idx on public.planner_runs (user_id, created_at desc);
 create index if not exists planner_blocks_run_position_idx on public.planner_blocks (run_id, position);
 
@@ -85,11 +117,16 @@ grant select, insert, update, delete on table public.planner_runs to authenticat
 grant select, insert, update, delete on table public.planner_blocks to authenticated;
 grant select, insert, update, delete on table public.user_preferences to authenticated;
 grant select, insert, update, delete on table public.calendar_events to authenticated;
+grant select, insert, update, delete on table public.user_profiles to authenticated;
+grant select, insert, update, delete on table public.player_live_status to authenticated;
 
 alter table public.planner_runs enable row level security;
 alter table public.planner_blocks enable row level security;
 alter table public.user_preferences enable row level security;
 alter table public.calendar_events enable row level security;
+alter table public.google_calendar_connections enable row level security;
+alter table public.user_profiles enable row level security;
+alter table public.player_live_status enable row level security;
 
 drop policy if exists "Users can read their own planner runs" on public.planner_runs;
 create policy "Users can read their own planner runs"
@@ -241,3 +278,75 @@ create policy "Users can delete their own calendar events"
   for delete
   to authenticated
   using (auth.uid() = user_id);
+
+drop policy if exists "Authenticated users can read user profiles" on public.user_profiles;
+create policy "Authenticated users can read user profiles"
+  on public.user_profiles
+  for select
+  to authenticated
+  using (true);
+
+drop policy if exists "Users can insert their own profile" on public.user_profiles;
+create policy "Users can insert their own profile"
+  on public.user_profiles
+  for insert
+  to authenticated
+  with check (auth.uid() = user_id);
+
+drop policy if exists "Users can update their own profile" on public.user_profiles;
+create policy "Users can update their own profile"
+  on public.user_profiles
+  for update
+  to authenticated
+  using (auth.uid() = user_id)
+  with check (auth.uid() = user_id);
+
+drop policy if exists "Users can delete their own profile" on public.user_profiles;
+create policy "Users can delete their own profile"
+  on public.user_profiles
+  for delete
+  to authenticated
+  using (auth.uid() = user_id);
+
+drop policy if exists "Authenticated users can read player live status" on public.player_live_status;
+create policy "Authenticated users can read player live status"
+  on public.player_live_status
+  for select
+  to authenticated
+  using (true);
+
+drop policy if exists "Users can insert their own player live status" on public.player_live_status;
+create policy "Users can insert their own player live status"
+  on public.player_live_status
+  for insert
+  to authenticated
+  with check (auth.uid() = user_id);
+
+drop policy if exists "Users can update their own player live status" on public.player_live_status;
+create policy "Users can update their own player live status"
+  on public.player_live_status
+  for update
+  to authenticated
+  using (auth.uid() = user_id)
+  with check (auth.uid() = user_id);
+
+drop policy if exists "Users can delete their own player live status" on public.player_live_status;
+create policy "Users can delete their own player live status"
+  on public.player_live_status
+  for delete
+  to authenticated
+  using (auth.uid() = user_id);
+
+do $$
+begin
+  if not exists (
+    select 1
+    from pg_publication_tables
+    where pubname = 'supabase_realtime'
+      and schemaname = 'public'
+      and tablename = 'player_live_status'
+  ) then
+    alter publication supabase_realtime add table public.player_live_status;
+  end if;
+end
+$$;

@@ -3,8 +3,8 @@ import { createClient as createSupabaseClient } from "@supabase/supabase-js";
 export type BrowserSupabaseClient = ReturnType<typeof createSupabaseClient>;
 
 let browserClient: BrowserSupabaseClient | null = null;
-const DEFAULT_SUPABASE_URL = "https://nhhlryqmbdivsuqjjyop.supabase.co";
-const DEFAULT_SUPABASE_ANON_KEY =
+export const DEFAULT_SUPABASE_URL = "https://nhhlryqmbdivsuqjjyop.supabase.co";
+export const DEFAULT_SUPABASE_ANON_KEY =
   "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5oaGxyeXFtYmRpdnN1cWpqeW9wIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzcxNTM2NjUsImV4cCI6MjA5MjcyOTY2NX0._1aF2pFNlUwM98miIZaqawny4MBdC9Ll2gD66AwNZeo";
 
 export function getSupabaseConfig() {

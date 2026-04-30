@@ -2,6 +2,7 @@
 
 import { useMemo, useState } from "react";
 import type { KaiExecutionBlock, KaiExecutionPlan, KaiUserProfile } from "@/lib/kai-prompt";
+import type { LeaderboardPlayer } from "@/lib/multiplayer-store";
 import type { PlannerHistoryRun } from "@/lib/plan-store";
 import { formatTrackedDuration, getBlockTargetPoints, type ScoreboardSummary } from "@/lib/scoreboard";
 
@@ -32,6 +33,9 @@ interface ExecutionRailProps {
   canReturnToLivePlan?: boolean;
   leaderboardName: string;
   scoreboard: ScoreboardSummary;
+  multiplayerPlayers?: LeaderboardPlayer[];
+  multiplayerLoading?: boolean;
+  viewerId?: string | null;
   deletingHistoryRunId?: string | null;
   protectedHistoryRunId?: string | null;
 }
@@ -136,6 +140,9 @@ export default function ExecutionRail({
   canReturnToLivePlan = false,
   leaderboardName,
   scoreboard,
+  multiplayerPlayers = [],
+  multiplayerLoading = false,
+  viewerId = null,
   deletingHistoryRunId = null,
   protectedHistoryRunId = null,
 }: ExecutionRailProps) {
@@ -154,6 +161,19 @@ export default function ExecutionRail({
   const completedScoreEntries = useMemo(
     () => scoreboard.completedEntries.filter((entry) => !entry.isCurrent),
     [scoreboard.completedEntries],
+  );
+  const remotePlayers = useMemo(
+    () =>
+      multiplayerPlayers
+        .filter((player) => player.userId !== viewerId)
+        .sort((left, right) => {
+          if (right.totalEarnedPoints !== left.totalEarnedPoints) {
+            return right.totalEarnedPoints - left.totalEarnedPoints;
+          }
+
+          return Date.parse(right.updatedAt) - Date.parse(left.updatedAt);
+        }),
+    [multiplayerPlayers, viewerId],
   );
 
   return (
@@ -353,7 +373,7 @@ export default function ExecutionRail({
         <div className="flex items-center justify-between gap-3">
           <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-white/35">Leaderboard</p>
           <span className="rounded-full border border-white/10 bg-white/6 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-white/60">
-            local
+            live server
           </span>
         </div>
 
@@ -419,6 +439,42 @@ export default function ExecutionRail({
                 </div>
               </div>
             ) : null}
+
+            <div className="rounded-[22px] border border-white/10 bg-white/[0.05] px-4 py-4">
+              <div className="flex items-center justify-between gap-3">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-white/35">Server players</p>
+                <span className="text-[11px] text-white/35">
+                  {multiplayerLoading ? "Loading…" : `${remotePlayers.length} online`}
+                </span>
+              </div>
+
+              {remotePlayers.length ? (
+                <div className="mt-3 space-y-3">
+                  {remotePlayers.map((player) => (
+                    <div key={player.userId} className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <p className="truncate text-sm font-semibold text-white/90">{player.displayName}</p>
+                        <p className="mt-1 text-xs text-white/45">
+                          {player.currentTaskTitle
+                            ? `${player.isTimerRunning ? "Working on" : "Last task"} ${player.currentTaskTitle} · ${formatTrackedDuration(player.currentElapsedSeconds)}`
+                            : "No live task right now"}
+                        </p>
+                      </div>
+                      <div className="text-right">
+                        <span className="rounded-full border border-sky-300/20 bg-sky-300/10 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-sky-100">
+                          {player.totalEarnedPoints} pts
+                        </span>
+                        <p className="mt-1 text-[10px] text-white/35">
+                          {player.sessionEarnedPoints}/{player.sessionAvailablePoints || player.sessionEarnedPoints} live
+                        </p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="mt-3 text-sm text-white/58">Once friends are using the same Supabase project, their live task progress will show up here.</p>
+              )}
+            </div>
           </div>
         ) : null}
       </article>

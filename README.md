@@ -45,6 +45,8 @@ npm run dev
 - saved planner blocks
 - right-side execution rail
 - history retrieval from Supabase
+- Verge calendar
+- live multiplayer leaderboard shell
 
 ## Mac Notes
 
@@ -109,6 +111,56 @@ If you want to point Verge at a different backend or Supabase project, use `.env
 - `NEXT_PUBLIC_KAI_API_BASE_URL`
 - `NEXT_PUBLIC_SUPABASE_URL`
 - `NEXT_PUBLIC_SUPABASE_ANON_KEY`
+
+## Supabase Schema Update
+
+For the latest preferences, calendar, Google sync metadata, and multiplayer leaderboard tables:
+
+1. Open [schema.sql](/Users/johnmeng_1/Documents/Codex/2026-04-22-https-claude-ai-share-df5b5d13-3f4e/verge-fresh/supabase/schema.sql)
+2. Copy the full file
+3. Paste it into Supabase `SQL Editor`
+4. Run it
+
+## Google Calendar Sync
+
+Add these Vercel environment variables to the hosted backend:
+
+- `SUPABASE_SERVICE_ROLE_KEY`
+- `GOOGLE_CLIENT_ID`
+- `GOOGLE_CLIENT_SECRET`
+- `GOOGLE_REDIRECT_URI`
+- `GOOGLE_OAUTH_STATE_SECRET`
+
+Recommended callback:
+
+```text
+https://verge-fresh.vercel.app/api/google-calendar/callback
+```
+
+Then redeploy:
+
+```bash
+npx vercel --prod
+```
+
+In Verge:
+
+1. Open `Calendar`
+2. Click `Connect Google`
+3. Finish Google auth
+4. Click `Sync to Google`
+
+## Live Multiplayer Leaderboard
+
+The live leaderboard uses the same Supabase project.
+
+Once multiple signed-in users are on the same Supabase backend, Verge will show:
+
+- each player’s current task
+- live timer progress
+- saved point totals
+
+No extra client setup is needed after the updated `schema.sql` is run.
 
 ## Troubleshooting
 
