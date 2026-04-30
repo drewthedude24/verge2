@@ -1,4 +1,9 @@
-import { isTaskFlowEligibleBlock, normalizeExecutionSurface } from "@/lib/execution-flow";
+import {
+  formatMinutesAsClock,
+  isTaskFlowEligibleBlock,
+  normalizeExecutionSurface,
+  parseClockToMinutes,
+} from "@/lib/execution-flow";
 import type { KaiExecutionBlock, KaiExecutionPlan, KaiUserProfile } from "@/lib/kai-prompt";
 import type { BrowserSupabaseClient } from "@/lib/supabase";
 
@@ -513,6 +518,99 @@ function inferPointValue(priorityBand: "low" | "medium" | "high") {
   }
 }
 
+function roundUpMinutes(value: number, step: number) {
+  return Math.ceil(value / step) * step;
+}
+
+function collectOccupiedWindows(profile: KaiUserProfile, basePlan: KaiExecutionPlan | null) {
+  const windows: Array<{ start: number; end: number }> = [];
+
+  for (const block of basePlan?.blocks || []) {
+    const start = parseClockToMinutes(block.start_time || "");
+    const end = parseClockToMinutes(block.end_time || "");
+    if (start === null || end === null || end <= start) {
+      continue;
+    }
+
+    windows.push({ start, end });
+  }
+
+  for (const commitment of profile.user_profile.fixed_commitments || []) {
+    const start = parseClockToMinutes(commitment.start_time || "");
+    const end = parseClockToMinutes(commitment.end_time || "");
+    if (start === null || end === null || end <= start) {
+      continue;
+    }
+
+    windows.push({ start, end });
+  }
+
+  windows.sort((left, right) => left.start - right.start);
+
+  const merged: Array<{ start: number; end: number }> = [];
+  for (const window of windows) {
+    const last = merged[merged.length - 1];
+    if (!last || window.start > last.end) {
+      merged.push({ ...window });
+      continue;
+    }
+
+    last.end = Math.max(last.end, window.end);
+  }
+
+  return merged;
+}
+
+function derivePlanningBounds(profile: KaiUserProfile, occupiedWindows: Array<{ start: number; end: number }>) {
+  const wakeMinutes = parseClockToMinutes(profile.user_profile.sleep?.wake_time || "");
+  const bedtimeMinutes = parseClockToMinutes(profile.user_profile.sleep?.bedtime || "");
+  const now = new Date();
+  const nowMinutes = now.getHours() * 60 + now.getMinutes();
+  const earliestOccupied = occupiedWindows[0]?.start ?? null;
+  const latestOccupied = occupiedWindows[occupiedWindows.length - 1]?.end ?? null;
+  const defaultStart = earliestOccupied !== null ? Math.max(360, earliestOccupied) : 8 * 60;
+  const defaultEnd = latestOccupied !== null ? Math.min(23 * 60, latestOccupied + 4 * 60) : 22 * 60;
+  const startMinutes = Math.max(wakeMinutes ?? defaultStart, roundUpMinutes(nowMinutes, 10));
+  const endMinutes = Math.max(startMinutes + 60, bedtimeMinutes ?? defaultEnd);
+
+  return {
+    startMinutes,
+    endMinutes,
+  };
+}
+
+function findNextOpenSlot({
+  cursor,
+  durationMinutes,
+  occupiedWindows,
+  dayEndMinutes,
+}: {
+  cursor: number;
+  durationMinutes: number;
+  occupiedWindows: Array<{ start: number; end: number }>;
+  dayEndMinutes: number;
+}) {
+  let slotStart = cursor;
+
+  for (const window of occupiedWindows) {
+    if (slotStart + durationMinutes <= window.start) {
+      return slotStart;
+    }
+
+    if (slotStart >= window.end) {
+      continue;
+    }
+
+    slotStart = window.end;
+  }
+
+  if (slotStart + durationMinutes <= dayEndMinutes) {
+    return slotStart;
+  }
+
+  return slotStart;
+}
+
 function normalizeExecutionBlock(block: KaiExecutionBlock, index: number): KaiExecutionBlock {
   return {
     ...block,
@@ -594,6 +692,9 @@ function buildFallbackExecutionPlan(profile: KaiUserProfile, basePlan: KaiExecut
     "fallback-task-flow";
   const scopeLabel = basePlan?.scope_label || "Today";
   const dateLabel = basePlan?.blocks.find((block) => block.date_label?.trim())?.date_label || scopeLabel;
+  const occupiedWindows = collectOccupiedWindows(profile, basePlan);
+  const { startMinutes, endMinutes } = derivePlanningBounds(profile, occupiedWindows);
+  let cursorMinutes = startMinutes;
 
   return {
     plan_id: planKeyBasis,
@@ -607,14 +708,24 @@ function buildFallbackExecutionPlan(profile: KaiUserProfile, basePlan: KaiExecut
     blocks: seeds.map((seed, index) => {
       const durationMinutes = inferDurationMinutes(seed.priorityBand);
       const taskSlug = slugifyPlanText(seed.title) || `task-${index + 1}`;
+      const slotStartMinutes = findNextOpenSlot({
+        cursor: cursorMinutes,
+        durationMinutes,
+        occupiedWindows,
+        dayEndMinutes: endMinutes,
+      });
+      const slotEndMinutes = slotStartMinutes + durationMinutes;
+      cursorMinutes = slotEndMinutes + 10;
+      occupiedWindows.push({ start: slotStartMinutes, end: slotEndMinutes });
+      occupiedWindows.sort((left, right) => left.start - right.start);
 
       return {
         id: `${planKeyBasis}-${taskSlug}-${index + 1}`,
         title: seed.title,
         kind: "task",
         date_label: dateLabel,
-        start_time: "",
-        end_time: "",
+        start_time: formatMinutesAsClock(slotStartMinutes),
+        end_time: formatMinutesAsClock(slotEndMinutes),
         duration_minutes: durationMinutes,
         status: "pending",
         focus_level: seed.priorityBand === "high" ? "deep" : "light",
