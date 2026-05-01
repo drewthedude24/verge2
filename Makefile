@@ -33,7 +33,8 @@ NODE_URL := https://nodejs.org/dist/v$(NODE_VERSION)/$(NODE_ARCHIVE)
 TOOLS_DIR := .tools
 NODE_DIR := $(TOOLS_DIR)/$(NODE_DIST)
 NODE_BIN := $(NODE_DIR)/bin/node
-NPM_BIN := $(NODE_DIR)/bin/npm
+NPM_CLI := $(NODE_DIR)/lib/node_modules/npm/bin/npm-cli.js
+LOCAL_ENV = env PATH="$(abspath $(NODE_DIR))/bin:$$PATH"
 
 .PHONY: help setup node install dev lint build-next clean-node node-version
 
@@ -55,18 +56,18 @@ $(NODE_BIN):
 node: $(NODE_BIN)
 
 install: node
-	@"$(NPM_BIN)" install
+	@$(LOCAL_ENV) "$(NODE_BIN)" "$(NPM_CLI)" install
 
 setup: install
 
 dev: node
-	@"$(NPM_BIN)" run dev
+	@$(LOCAL_ENV) "$(NODE_BIN)" "$(NPM_CLI)" run dev
 
 lint: node
-	@"$(NPM_BIN)" run lint
+	@$(LOCAL_ENV) "$(NODE_BIN)" "$(NPM_CLI)" run lint
 
 build-next: node
-	@"$(NPM_BIN)" run build:next
+	@$(LOCAL_ENV) "$(NODE_BIN)" "$(NPM_CLI)" run build:next
 
 node-version: node
 	@"$(NODE_BIN)" -v
