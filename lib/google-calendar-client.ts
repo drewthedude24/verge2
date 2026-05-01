@@ -103,3 +103,24 @@ export async function loadGoogleCalendarEvents({
     cache: "no-store",
   });
 }
+
+export async function deleteGoogleCalendarEventForUser({
+  accessToken,
+  eventId,
+  eventKey,
+  externalEventId,
+}: {
+  accessToken: string;
+  eventId?: string | null;
+  eventKey?: string | null;
+  externalEventId?: string | null;
+}) {
+  return requestAuthorizedJson<{ removed: boolean }>("/api/google-calendar/events", accessToken, {
+    method: "DELETE",
+    body: JSON.stringify({
+      eventId,
+      eventKey,
+      externalEventId,
+    }),
+  });
+}

@@ -1,9 +1,18 @@
 import { NextRequest } from "next/server";
 import { buildApiCorsHeaders } from "@/lib/api-cors";
-import { getGoogleCalendarColorHex, isGoogleCalendarConfigured, listGoogleCalendarEvents, refreshGoogleCalendarAccessToken, buildGoogleExpiryTimestamp, type GoogleCalendarConnectionRow } from "@/lib/google-calendar";
+import {
+  buildGoogleExpiryTimestamp,
+  deleteGoogleCalendarEvent,
+  getGoogleCalendarColorHex,
+  isGoogleCalendarConfigured,
+  listGoogleCalendarEvents,
+  refreshGoogleCalendarAccessToken,
+  type GoogleCalendarConnectionRow,
+} from "@/lib/google-calendar";
 import { createSupabaseAdminClient, getAuthenticatedUserFromBearer, isSupabaseServiceRoleConfigured } from "@/lib/supabase-server";
 
 type StoredCalendarEventRow = {
+  id?: string;
   event_key: string;
   title: string;
   kind: string | null;
@@ -12,6 +21,12 @@ type StoredCalendarEventRow = {
   source_block_id: string | null;
   notes: string | null;
   external_event_id: string | null;
+};
+
+type DeleteCalendarEventBody = {
+  eventId?: string | null;
+  eventKey?: string | null;
+  externalEventId?: string | null;
 };
 
 function buildHeaders() {
@@ -225,6 +240,117 @@ export async function GET(request: NextRequest) {
     );
   } catch (error) {
     console.error("[Google Calendar] Events fetch failed:", error);
+    return errorResponse(error);
+  }
+}
+
+export async function DELETE(request: NextRequest) {
+  try {
+    const user = await getAuthenticatedUserFromBearer(request.headers.get("authorization"));
+    if (!user) {
+      return new Response("Unauthorized", {
+        status: 401,
+        headers: buildHeaders(),
+      });
+    }
+
+    const body = (await request.json().catch(() => null)) as DeleteCalendarEventBody | null;
+    const eventId = body?.eventId?.trim() || null;
+    const eventKey = body?.eventKey?.trim() || null;
+    const externalEventId = body?.externalEventId?.trim() || null;
+
+    if (!eventId && !eventKey && !externalEventId) {
+      return new Response("A calendar event id or key is required.", {
+        status: 400,
+        headers: buildHeaders(),
+      });
+    }
+
+    const admin = createSupabaseAdminClient();
+    let lookup = admin
+      .from("calendar_events")
+      .select("id, event_key, external_event_id")
+      .eq("user_id", user.id)
+      .limit(1);
+
+    if (eventId) {
+      lookup = lookup.eq("id", eventId);
+    } else if (eventKey) {
+      lookup = lookup.eq("event_key", eventKey);
+    } else {
+      lookup = lookup.eq("external_event_id", externalEventId);
+    }
+
+    const { data: storedRow, error: storedRowError } = await lookup.maybeSingle();
+    if (storedRowError) {
+      return new Response(storedRowError.message, {
+        status: 500,
+        headers: buildHeaders(),
+      });
+    }
+
+    const matchedRow = (storedRow as StoredCalendarEventRow | null) || null;
+    const matchedExternalEventId = matchedRow?.external_event_id || externalEventId;
+
+    if (matchedExternalEventId) {
+      if (!isGoogleCalendarConfigured() || !isSupabaseServiceRoleConfigured()) {
+        return new Response("Google Calendar server config is incomplete.", {
+          status: 400,
+          headers: buildHeaders(),
+        });
+      }
+
+      const storedConnection = await getStoredConnection(admin, user.id);
+      if (!storedConnection) {
+        return new Response("Google Calendar is not connected for this account yet.", {
+          status: 400,
+          headers: buildHeaders(),
+        });
+      }
+
+      const connection = await refreshStoredConnectionIfNeeded(admin, storedConnection);
+      await deleteGoogleCalendarEvent({
+        accessToken: connection.access_token,
+        calendarId: connection.calendar_id || "primary",
+        eventId: matchedExternalEventId,
+      });
+    }
+
+    if (matchedRow?.id) {
+      const { error } = await admin.from("calendar_events").delete().eq("id", matchedRow.id).eq("user_id", user.id);
+      if (error) {
+        return new Response(error.message, {
+          status: 500,
+          headers: buildHeaders(),
+        });
+      }
+    } else {
+      let deleteQuery = admin.from("calendar_events").delete().eq("user_id", user.id);
+      if (eventId) {
+        deleteQuery = deleteQuery.eq("id", eventId);
+      } else if (eventKey) {
+        deleteQuery = deleteQuery.eq("event_key", eventKey);
+      } else if (externalEventId) {
+        deleteQuery = deleteQuery.eq("external_event_id", externalEventId);
+      }
+
+      const { error } = await deleteQuery;
+      if (error) {
+        return new Response(error.message, {
+          status: 500,
+          headers: buildHeaders(),
+        });
+      }
+    }
+
+    return Response.json(
+      {
+        removed: true,
+      },
+      { headers: buildHeaders() },
+    );
+  } catch (error) {
+    console.error("[Google Calendar] Event delete failed:", error);
     return errorResponse(error);
   }
 }

@@ -7,12 +7,14 @@ import type { KaiExecutionBlock } from "@/lib/kai-prompt";
 import {
   buildCalendarIntentContext,
   buildCalendarEventsFromPlan,
+  deleteCalendarEvent,
   getUSHolidaysForYear,
   importPlanToCalendar,
   loadCalendarEvents,
   type CalendarEvent,
 } from "@/lib/calendar-store";
 import {
+  deleteGoogleCalendarEventForUser,
   getGoogleCalendarAuthUrl,
   loadGoogleCalendarEvents,
   loadGoogleCalendarStatus,
@@ -629,6 +631,7 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
   const [googleCalendarStatus, setGoogleCalendarStatus] = useState<GoogleCalendarStatus | null>(null);
   const [googleCalendarLoading, setGoogleCalendarLoading] = useState(false);
   const [googleCalendarSyncing, setGoogleCalendarSyncing] = useState(false);
+  const [calendarRemovingEventKey, setCalendarRemovingEventKey] = useState<string | null>(null);
   const [lastRequestWantedCalendar, setLastRequestWantedCalendar] = useState(false);
   const [deletingHistoryRunId, setDeletingHistoryRunId] = useState<string | null>(null);
   const [selectedHistoryRunId, setSelectedHistoryRunId] = useState<string | null>(null);
@@ -2772,6 +2775,43 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
     }
   }
 
+  async function handleRemoveCalendarEvent(event: CalendarEvent) {
+    setCalendarRemovingEventKey(event.eventKey);
+    setCalendarStatus(null);
+
+    try {
+      if (event.externalProvider === "google" || event.externalEventId) {
+        const accessToken = await getViewerAccessToken();
+        if (!accessToken) {
+          throw new Error("Sign in first to remove Google Calendar events.");
+        }
+
+        await deleteGoogleCalendarEventForUser({
+          accessToken,
+          eventId: event.id,
+          eventKey: event.eventKey,
+          externalEventId: event.externalEventId,
+        });
+      } else {
+        await deleteCalendarEvent({
+          supabase,
+          userId: viewer.id,
+          eventId: event.id,
+        });
+      }
+
+      setCalendarStatus(`Removed "${event.title}" from Calendar.`);
+      await refreshCalendarPanel();
+    } catch (error) {
+      console.error("[Verge] Failed to remove calendar event:", error);
+      setCalendarStatus(
+        error instanceof Error ? `Calendar remove failed: ${error.message}` : "Calendar remove failed.",
+      );
+    } finally {
+      setCalendarRemovingEventKey(null);
+    }
+  }
+
   async function handleSend() {
     if (!input.trim() || isLoading) {
       return;
@@ -3448,11 +3488,23 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
                             <div className="flex items-start gap-3">
                               <span className="mt-1 h-3 w-3 rounded-full" style={{ backgroundColor: event.color }} />
                               <div className="min-w-0 flex-1">
-                                <div className="flex items-center gap-2">
-                                  <p className="truncate text-sm font-semibold text-white">{event.title}</p>
-                                  <span className="rounded-full border border-white/10 bg-white/6 px-2 py-1 text-[10px] uppercase tracking-[0.14em] text-white/55">
-                                    {event.kind}
-                                  </span>
+                                <div className="flex items-start justify-between gap-3">
+                                  <div className="min-w-0">
+                                    <div className="flex items-center gap-2">
+                                      <p className="truncate text-sm font-semibold text-white">{event.title}</p>
+                                      <span className="rounded-full border border-white/10 bg-white/6 px-2 py-1 text-[10px] uppercase tracking-[0.14em] text-white/55">
+                                        {event.kind}
+                                      </span>
+                                    </div>
+                                  </div>
+                                  <button
+                                    onClick={() => void handleRemoveCalendarEvent(event)}
+                                    disabled={calendarRemovingEventKey === event.eventKey}
+                                    className="rounded-full border border-rose-300/20 bg-rose-300/10 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.16em] text-rose-100 transition hover:bg-rose-300/20 disabled:cursor-default disabled:opacity-40"
+                                    type="button"
+                                  >
+                                    {calendarRemovingEventKey === event.eventKey ? "Removing…" : "Remove"}
+                                  </button>
                                 </div>
                                 <p className="mt-2 text-xs text-white/45">{formatCalendarTimeRange(event.startTime, event.endTime)}</p>
                                 {event.notes ? <p className="mt-2 text-xs leading-5 text-white/55">{event.notes}</p> : null}

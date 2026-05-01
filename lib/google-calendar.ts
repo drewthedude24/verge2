@@ -315,6 +315,16 @@ async function requestGoogleCalendarJson(url: string, init: RequestInit) {
   return response.json();
 }
 
+async function requestGoogleCalendar(url: string, init: RequestInit) {
+  const response = await fetch(url, init);
+  if (!response.ok && response.status !== 404) {
+    const details = await response.text().catch(() => "");
+    throw new Error(`Google Calendar request failed with status ${response.status}. ${details.slice(0, 240)}`);
+  }
+
+  return response;
+}
+
 export async function createOrUpdateGoogleCalendarEvent({
   accessToken,
   calendarId,
@@ -342,6 +352,24 @@ export async function createOrUpdateGoogleCalendarEvent({
   })) as { id?: string | null };
 
   return response.id || null;
+}
+
+export async function deleteGoogleCalendarEvent({
+  accessToken,
+  calendarId,
+  eventId,
+}: {
+  accessToken: string;
+  calendarId: string;
+  eventId: string;
+}) {
+  const url = `${GOOGLE_CALENDAR_API_BASE_URL}/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(eventId)}`;
+  await requestGoogleCalendar(url, {
+    method: "DELETE",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+    },
+  });
 }
 
 export async function listGoogleCalendarEvents({
