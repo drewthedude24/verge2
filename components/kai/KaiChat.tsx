@@ -1011,8 +1011,17 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
   );
   const visibleCalendarEvents = useMemo(() => {
     if (googleCalendarStatus?.connected) {
-      return googleCalendarEvents
-        .slice()
+      const mergedEvents = new Map<string, CalendarEvent>();
+
+      for (const event of calendarEvents) {
+        mergedEvents.set(event.externalEventId || event.eventKey, event);
+      }
+
+      for (const event of googleCalendarEvents) {
+        mergedEvents.set(event.externalEventId || event.eventKey, event);
+      }
+
+      return [...mergedEvents.values()]
         .sort((left, right) =>
           `${left.eventDate}${left.startTime || "99:99"}${left.title}`.localeCompare(
             `${right.eventDate}${right.startTime || "99:99"}${right.title}`,
@@ -1020,8 +1029,14 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
         );
     }
 
-    return [] as CalendarEvent[];
-  }, [googleCalendarEvents, googleCalendarStatus?.connected]);
+    return calendarEvents
+      .slice()
+      .sort((left, right) =>
+        `${left.eventDate}${left.startTime || "99:99"}${left.title}`.localeCompare(
+          `${right.eventDate}${right.startTime || "99:99"}${right.title}`,
+        ),
+      );
+  }, [calendarEvents, googleCalendarEvents, googleCalendarStatus?.connected]);
   const calendarMonthGrid = useMemo(() => getCalendarMonthGrid(calendarMonthAnchor), [calendarMonthAnchor]);
   const visibleCalendarHolidayMap = useMemo(() => {
     const holidayMap = new Map<string, string>();
@@ -1593,6 +1608,9 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
     } catch (error) {
       console.error("[Verge] Failed to load live Google Calendar events:", error);
       setGoogleCalendarEvents([]);
+      setCalendarStatus(
+        error instanceof Error ? `Google Calendar refresh failed: ${error.message}` : "Google Calendar refresh failed.",
+      );
     }
   }, [calendarMonthAnchor, getViewerAccessToken, viewer.id]);
 
@@ -2744,7 +2762,11 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
       await refreshCalendarPanel();
     } catch (error) {
       console.error("[Verge] Failed to sync Google Calendar events:", error);
-      setCalendarStatus("Google Calendar sync failed. If this is your first time, connect Google first and try again.");
+      setCalendarStatus(
+        error instanceof Error
+          ? `Google Calendar sync failed: ${error.message}`
+          : "Google Calendar sync failed. If this is your first time, connect Google first and try again.",
+      );
     } finally {
       setGoogleCalendarSyncing(false);
     }

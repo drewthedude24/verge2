@@ -70,7 +70,7 @@ async function refreshStoredConnectionIfNeeded(
     updated_at: new Date().toISOString(),
   };
 
-  await admin.from("google_calendar_connections").upsert(
+  const { error } = await admin.from("google_calendar_connections").upsert(
     {
       user_id: nextConnection.user_id,
       google_email: nextConnection.google_email,
@@ -84,7 +84,19 @@ async function refreshStoredConnectionIfNeeded(
     { onConflict: "user_id" },
   );
 
+  if (error) {
+    throw new Error(error.message);
+  }
+
   return nextConnection;
+}
+
+function errorResponse(error: unknown) {
+  const message = error instanceof Error ? error.message : "Google Calendar sync failed.";
+  return new Response(message, {
+    status: 500,
+    headers: buildHeaders(),
+  });
 }
 
 export async function OPTIONS() {
@@ -95,107 +107,112 @@ export async function OPTIONS() {
 }
 
 export async function POST(request: NextRequest) {
-  const user = await getAuthenticatedUserFromBearer(request.headers.get("authorization"));
-  if (!user) {
-    return new Response("Unauthorized", {
-      status: 401,
-      headers: buildHeaders(),
+  try {
+    const user = await getAuthenticatedUserFromBearer(request.headers.get("authorization"));
+    if (!user) {
+      return new Response("Unauthorized", {
+        status: 401,
+        headers: buildHeaders(),
+      });
+    }
+
+    if (!isGoogleCalendarConfigured() || !isSupabaseServiceRoleConfigured()) {
+      return new Response("Google Calendar server config is incomplete.", {
+        status: 400,
+        headers: buildHeaders(),
+      });
+    }
+
+    const body = (await request.json().catch(() => null)) as CalendarSyncBody | null;
+    const events = Array.isArray(body?.events) ? body?.events : [];
+    if (!events.length) {
+      return Response.json({ syncedCount: 0 }, { headers: buildHeaders() });
+    }
+
+    const admin = createSupabaseAdminClient();
+    const storedConnection = await getStoredConnection(admin, user.id);
+    if (!storedConnection) {
+      return new Response("Google Calendar is not connected for this account yet.", {
+        status: 400,
+        headers: buildHeaders(),
+      });
+    }
+
+    const connection = await refreshStoredConnectionIfNeeded(admin, storedConnection);
+    const eventKeys = events.map((event) => event.eventKey).filter(Boolean);
+    const { data: existingRows, error: existingRowsError } = await admin
+      .from("calendar_events")
+      .select("event_key, external_event_id")
+      .eq("user_id", user.id)
+      .in("event_key", eventKeys);
+
+    if (existingRowsError) {
+      return new Response(existingRowsError.message, {
+        status: 500,
+        headers: buildHeaders(),
+      });
+    }
+
+    const existingMap = new Map<string, StoredCalendarEventRow>();
+    for (const row of ((existingRows as StoredCalendarEventRow[] | null) || [])) {
+      existingMap.set(row.event_key, row);
+    }
+
+    const syncedRows = [];
+    const fallbackTimeZone = body?.timeZone || Intl.DateTimeFormat().resolvedOptions().timeZone || "America/Chicago";
+
+    for (const event of events) {
+      const existing = existingMap.get(event.eventKey);
+      const externalEventId =
+        (await createOrUpdateGoogleCalendarEvent({
+          accessToken: connection.access_token,
+          calendarId: connection.calendar_id || "primary",
+          existingEventId: existing?.external_event_id || event.externalEventId || null,
+          event,
+          timeZone: fallbackTimeZone,
+        })) || existing?.external_event_id || event.externalEventId || null;
+
+      syncedRows.push({
+        user_id: user.id,
+        event_key: event.eventKey,
+        title: event.title,
+        event_date: event.eventDate,
+        start_time: event.startTime,
+        end_time: event.endTime,
+        kind: event.kind,
+        color: event.color,
+        status: event.status,
+        source_plan_key: event.sourcePlanKey || body?.planKey || null,
+        source_block_id: event.sourceBlockId,
+        external_provider: "google",
+        external_event_id: externalEventId,
+        notes: event.notes,
+        updated_at: new Date().toISOString(),
+      });
+    }
+
+    const { error: upsertError } = await admin.from("calendar_events").upsert(syncedRows as never, {
+      onConflict: "user_id,event_key",
     });
-  }
 
-  if (!isGoogleCalendarConfigured() || !isSupabaseServiceRoleConfigured()) {
-    return new Response("Google Calendar server config is incomplete.", {
-      status: 400,
-      headers: buildHeaders(),
-    });
-  }
+    if (upsertError) {
+      return new Response(upsertError.message, {
+        status: 500,
+        headers: buildHeaders(),
+      });
+    }
 
-  const body = (await request.json().catch(() => null)) as CalendarSyncBody | null;
-  const events = Array.isArray(body?.events) ? body?.events : [];
-  if (!events.length) {
-    return Response.json({ syncedCount: 0 }, { headers: buildHeaders() });
-  }
-
-  const admin = createSupabaseAdminClient();
-  const storedConnection = await getStoredConnection(admin, user.id);
-  if (!storedConnection) {
-    return new Response("Google Calendar is not connected for this account yet.", {
-      status: 400,
-      headers: buildHeaders(),
-    });
-  }
-
-  const connection = await refreshStoredConnectionIfNeeded(admin, storedConnection);
-  const eventKeys = events.map((event) => event.eventKey).filter(Boolean);
-  const { data: existingRows, error: existingRowsError } = await admin
-    .from("calendar_events")
-    .select("event_key, external_event_id")
-    .eq("user_id", user.id)
-    .in("event_key", eventKeys);
-
-  if (existingRowsError) {
-    return new Response(existingRowsError.message, {
-      status: 500,
-      headers: buildHeaders(),
-    });
-  }
-
-  const existingMap = new Map<string, StoredCalendarEventRow>();
-  for (const row of ((existingRows as StoredCalendarEventRow[] | null) || [])) {
-    existingMap.set(row.event_key, row);
-  }
-
-  const syncedRows = [];
-  const fallbackTimeZone = body?.timeZone || Intl.DateTimeFormat().resolvedOptions().timeZone || "America/Chicago";
-
-  for (const event of events) {
-    const existing = existingMap.get(event.eventKey);
-    const externalEventId =
-      (await createOrUpdateGoogleCalendarEvent({
-        accessToken: connection.access_token,
+    return Response.json(
+      {
+        syncedCount: syncedRows.length,
         calendarId: connection.calendar_id || "primary",
-        existingEventId: existing?.external_event_id || event.externalEventId || null,
-        event,
-        timeZone: fallbackTimeZone,
-      })) || existing?.external_event_id || event.externalEventId || null;
-
-    syncedRows.push({
-      user_id: user.id,
-      event_key: event.eventKey,
-      title: event.title,
-      event_date: event.eventDate,
-      start_time: event.startTime,
-      end_time: event.endTime,
-      kind: event.kind,
-      color: event.color,
-      status: event.status,
-      source_plan_key: event.sourcePlanKey || body?.planKey || null,
-      source_block_id: event.sourceBlockId,
-      external_provider: "google",
-      external_event_id: externalEventId,
-      notes: event.notes,
-      updated_at: new Date().toISOString(),
-    });
+      },
+      {
+        headers: buildHeaders(),
+      },
+    );
+  } catch (error) {
+    console.error("[Google Calendar] Sync failed:", error);
+    return errorResponse(error);
   }
-
-  const { error: upsertError } = await admin.from("calendar_events").upsert(syncedRows as never, {
-    onConflict: "user_id,event_key",
-  });
-
-  if (upsertError) {
-    return new Response(upsertError.message, {
-      status: 500,
-      headers: buildHeaders(),
-    });
-  }
-
-  return Response.json(
-    {
-      syncedCount: syncedRows.length,
-      calendarId: connection.calendar_id || "primary",
-    },
-    {
-      headers: buildHeaders(),
-    },
-  );
 }

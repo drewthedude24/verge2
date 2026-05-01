@@ -84,6 +84,14 @@ async function refreshStoredConnectionIfNeeded(
   return nextConnection;
 }
 
+function errorResponse(error: unknown) {
+  const message = error instanceof Error ? error.message : "Google Calendar events request failed.";
+  return new Response(message, {
+    status: 500,
+    headers: buildHeaders(),
+  });
+}
+
 function normalizeGoogleTimes(event: {
   start?: { date?: string; dateTime?: string };
   end?: { date?: string; dateTime?: string };
@@ -124,94 +132,99 @@ export async function OPTIONS() {
 }
 
 export async function GET(request: NextRequest) {
-  const user = await getAuthenticatedUserFromBearer(request.headers.get("authorization"));
-  if (!user) {
-    return new Response("Unauthorized", {
-      status: 401,
-      headers: buildHeaders(),
-    });
-  }
-
-  if (!isGoogleCalendarConfigured() || !isSupabaseServiceRoleConfigured()) {
-    return Response.json(
-      { connected: false, events: [] },
-      { headers: buildHeaders() },
-    );
-  }
-
-  const admin = createSupabaseAdminClient();
-  const storedConnection = await getStoredConnection(admin, user.id);
-  if (!storedConnection) {
-    return Response.json(
-      { connected: false, events: [] },
-      { headers: buildHeaders() },
-    );
-  }
-
-  const url = new URL(request.url);
-  const rangeStart = url.searchParams.get("from") || new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
-  const rangeEnd = url.searchParams.get("to") || new Date(Date.now() + 120 * 24 * 60 * 60 * 1000).toISOString();
-  const connection = await refreshStoredConnectionIfNeeded(admin, storedConnection);
-
-  const googleEvents = await listGoogleCalendarEvents({
-    accessToken: connection.access_token,
-    calendarId: connection.calendar_id || "primary",
-    timeMin: rangeStart,
-    timeMax: rangeEnd,
-  });
-
-  const externalIds = googleEvents.map((event) => event.id).filter(Boolean) as string[];
-  const { data: storedRows } = externalIds.length
-    ? await admin
-        .from("calendar_events")
-        .select("event_key, title, kind, color, source_plan_key, source_block_id, notes, external_event_id")
-        .eq("user_id", user.id)
-        .in("external_event_id", externalIds)
-    : { data: [] };
-
-  const storedByExternalId = new Map<string, StoredCalendarEventRow>();
-  for (const row of ((storedRows as StoredCalendarEventRow[] | null) || [])) {
-    if (row.external_event_id) {
-      storedByExternalId.set(row.external_event_id, row);
+  try {
+    const user = await getAuthenticatedUserFromBearer(request.headers.get("authorization"));
+    if (!user) {
+      return new Response("Unauthorized", {
+        status: 401,
+        headers: buildHeaders(),
+      });
     }
-  }
 
-  const normalizedEvents = googleEvents
-    .map((event) => {
-      if (!event.id) {
-        return null;
-      }
+    if (!isGoogleCalendarConfigured() || !isSupabaseServiceRoleConfigured()) {
+      return Response.json(
+        { connected: false, events: [] },
+        { headers: buildHeaders() },
+      );
+    }
 
-      const stored = storedByExternalId.get(event.id);
-      const timing = normalizeGoogleTimes(event);
-      const vergeEventKey = event.extendedProperties?.private?.vergeEventKey || stored?.event_key || `google:${event.id}`;
+    const admin = createSupabaseAdminClient();
+    const storedConnection = await getStoredConnection(admin, user.id);
+    if (!storedConnection) {
+      return Response.json(
+        { connected: false, events: [] },
+        { headers: buildHeaders() },
+      );
+    }
 
-      return {
-        id: event.id,
-        eventKey: vergeEventKey,
-        title: stored?.title || event.summary || "Untitled event",
-        eventDate: timing.eventDate,
-        startTime: timing.startTime,
-        endTime: timing.endTime,
-        kind: (stored?.kind as "task" | "break" | "buffer" | "fixed" | "meal" | "workout" | "recovery" | "commute" | null) || "fixed",
-        color: stored?.color || getGoogleCalendarColorHex(event.colorId),
-        status: "scheduled",
-        sourcePlanKey: stored?.source_plan_key || null,
-        sourceBlockId: stored?.source_block_id || null,
-        externalProvider: "google",
-        externalEventId: event.id,
-        notes: stored?.notes || event.description || null,
-        htmlLink: event.htmlLink || null,
-      };
-    })
-    .filter(Boolean);
+    const url = new URL(request.url);
+    const rangeStart = url.searchParams.get("from") || new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+    const rangeEnd = url.searchParams.get("to") || new Date(Date.now() + 120 * 24 * 60 * 60 * 1000).toISOString();
+    const connection = await refreshStoredConnectionIfNeeded(admin, storedConnection);
 
-  return Response.json(
-    {
-      connected: true,
+    const googleEvents = await listGoogleCalendarEvents({
+      accessToken: connection.access_token,
       calendarId: connection.calendar_id || "primary",
-      events: normalizedEvents,
-    },
-    { headers: buildHeaders() },
-  );
+      timeMin: rangeStart,
+      timeMax: rangeEnd,
+    });
+
+    const externalIds = googleEvents.map((event) => event.id).filter(Boolean) as string[];
+    const { data: storedRows } = externalIds.length
+      ? await admin
+          .from("calendar_events")
+          .select("event_key, title, kind, color, source_plan_key, source_block_id, notes, external_event_id")
+          .eq("user_id", user.id)
+          .in("external_event_id", externalIds)
+      : { data: [] };
+
+    const storedByExternalId = new Map<string, StoredCalendarEventRow>();
+    for (const row of ((storedRows as StoredCalendarEventRow[] | null) || [])) {
+      if (row.external_event_id) {
+        storedByExternalId.set(row.external_event_id, row);
+      }
+    }
+
+    const normalizedEvents = googleEvents
+      .map((event) => {
+        if (!event.id) {
+          return null;
+        }
+
+        const stored = storedByExternalId.get(event.id);
+        const timing = normalizeGoogleTimes(event);
+        const vergeEventKey = event.extendedProperties?.private?.vergeEventKey || stored?.event_key || `google:${event.id}`;
+
+        return {
+          id: event.id,
+          eventKey: vergeEventKey,
+          title: stored?.title || event.summary || "Untitled event",
+          eventDate: timing.eventDate,
+          startTime: timing.startTime,
+          endTime: timing.endTime,
+          kind: (stored?.kind as "task" | "break" | "buffer" | "fixed" | "meal" | "workout" | "recovery" | "commute" | null) || "fixed",
+          color: stored?.color || getGoogleCalendarColorHex(event.colorId),
+          status: "scheduled",
+          sourcePlanKey: stored?.source_plan_key || null,
+          sourceBlockId: stored?.source_block_id || null,
+          externalProvider: "google",
+          externalEventId: event.id,
+          notes: stored?.notes || event.description || null,
+          htmlLink: event.htmlLink || null,
+        };
+      })
+      .filter(Boolean);
+
+    return Response.json(
+      {
+        connected: true,
+        calendarId: connection.calendar_id || "primary",
+        events: normalizedEvents,
+      },
+      { headers: buildHeaders() },
+    );
+  } catch (error) {
+    console.error("[Google Calendar] Events fetch failed:", error);
+    return errorResponse(error);
+  }
 }

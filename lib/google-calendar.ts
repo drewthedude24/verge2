@@ -11,6 +11,16 @@ const GOOGLE_CALENDAR_SCOPES = [
   "https://www.googleapis.com/auth/calendar",
 ];
 
+function shiftIsoDateByDays(isoDate: string, dayDelta: number) {
+  const date = new Date(`${isoDate}T12:00:00`);
+  if (Number.isNaN(date.getTime())) {
+    return isoDate;
+  }
+
+  date.setDate(date.getDate() + dayDelta);
+  return date.toISOString().slice(0, 10);
+}
+
 export type GoogleCalendarConnectionRow = {
   user_id: string;
   google_email: string | null;
@@ -279,6 +289,9 @@ function buildGoogleCalendarEventPayload(event: CalendarEvent, timeZone: string)
     };
   }
 
+  const normalizedEndDate =
+    event.endTime > event.startTime ? event.eventDate : shiftIsoDateByDays(event.eventDate, 1);
+
   return {
     ...shared,
     start: {
@@ -286,7 +299,7 @@ function buildGoogleCalendarEventPayload(event: CalendarEvent, timeZone: string)
       timeZone,
     },
     end: {
-      dateTime: `${event.eventDate}T${event.endTime}:00`,
+      dateTime: `${normalizedEndDate}T${event.endTime}:00`,
       timeZone,
     },
   };
