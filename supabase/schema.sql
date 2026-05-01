@@ -113,12 +113,15 @@ create index if not exists planner_runs_user_created_idx on public.planner_runs 
 create index if not exists planner_blocks_run_position_idx on public.planner_blocks (run_id, position);
 
 grant usage on schema public to authenticated;
+grant usage on schema public to service_role;
 grant select, insert, update, delete on table public.planner_runs to authenticated;
 grant select, insert, update, delete on table public.planner_blocks to authenticated;
 grant select, insert, update, delete on table public.user_preferences to authenticated;
 grant select, insert, update, delete on table public.calendar_events to authenticated;
 grant select, insert, update, delete on table public.user_profiles to authenticated;
 grant select, insert, update, delete on table public.player_live_status to authenticated;
+grant select, insert, update, delete on table public.google_calendar_connections to service_role;
+grant select, insert, update, delete on table public.calendar_events to service_role;
 
 alter table public.planner_runs enable row level security;
 alter table public.planner_blocks enable row level security;
