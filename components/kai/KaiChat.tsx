@@ -7,7 +7,6 @@ import type { KaiExecutionBlock } from "@/lib/kai-prompt";
 import {
   buildCalendarIntentContext,
   buildCalendarEventsFromPlan,
-  deleteCalendarEvent,
   getUSHolidaysForYear,
   importPlanToCalendar,
   loadCalendarEvents,
@@ -317,9 +316,52 @@ function formatCalendarDateHeading(value: string) {
 
   return date.toLocaleDateString([], {
     weekday: "long",
-    month: "short",
+    month: "long",
     day: "numeric",
   });
+}
+
+function formatCalendarMonthLabel(value: Date) {
+  return value.toLocaleDateString([], {
+    month: "long",
+    year: "numeric",
+  });
+}
+
+function toIsoCalendarDate(value: Date) {
+  return new Date(Date.UTC(value.getFullYear(), value.getMonth(), value.getDate())).toISOString().slice(0, 10);
+}
+
+function getCalendarMonthGrid(anchor: Date) {
+  const monthStart = new Date(anchor.getFullYear(), anchor.getMonth(), 1);
+  const gridStart = new Date(monthStart);
+  gridStart.setDate(gridStart.getDate() - gridStart.getDay());
+
+  return Array.from({ length: 42 }, (_, index) => {
+    const date = new Date(gridStart);
+    date.setDate(gridStart.getDate() + index);
+
+    return {
+      date,
+      isoDate: toIsoCalendarDate(date),
+      dayNumber: date.getDate(),
+      inCurrentMonth: date.getMonth() === anchor.getMonth(),
+      isToday: toIsoCalendarDate(date) === toIsoCalendarDate(new Date()),
+    };
+  });
+}
+
+function getCalendarFetchWindow(anchor: Date) {
+  const grid = getCalendarMonthGrid(anchor);
+  const first = grid[0]?.date || anchor;
+  const last = grid.at(-1)?.date || anchor;
+  const rangeEnd = new Date(last);
+  rangeEnd.setDate(rangeEnd.getDate() + 1);
+
+  return {
+    from: new Date(first.getFullYear(), first.getMonth(), first.getDate()).toISOString(),
+    to: new Date(rangeEnd.getFullYear(), rangeEnd.getMonth(), rangeEnd.getDate()).toISOString(),
+  };
 }
 
 function formatCalendarTimeRange(startTime: string | null, endTime: string | null) {
@@ -509,6 +551,8 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
   const [calendarImporting, setCalendarImporting] = useState(false);
   const [calendarEvents, setCalendarEvents] = useState<CalendarEvent[]>([]);
   const [googleCalendarEvents, setGoogleCalendarEvents] = useState<CalendarEvent[]>([]);
+  const [calendarMonthAnchor, setCalendarMonthAnchor] = useState(() => new Date());
+  const [selectedCalendarDate, setSelectedCalendarDate] = useState(() => toIsoCalendarDate(new Date()));
   const [calendarStatus, setCalendarStatus] = useState<string | null>(null);
   const [googleCalendarStatus, setGoogleCalendarStatus] = useState<GoogleCalendarStatus | null>(null);
   const [googleCalendarLoading, setGoogleCalendarLoading] = useState(false);
@@ -839,52 +883,40 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
       !activePlanAlreadyInCalendar &&
       (lastRequestWantedCalendar || fullExecutionPlan.timeline_mode === "multi_day"),
   );
-  const calendarSections = useMemo(() => {
-    const connectedGoogleEvents = googleCalendarStatus?.connected ? googleCalendarEvents : [];
-    const localOnlyEvents = calendarEvents.filter((event) => event.externalProvider !== "google");
-    const mergedEvents = googleCalendarStatus?.connected
-      ? [
-          ...connectedGoogleEvents,
-          ...localOnlyEvents.filter(
-            (localEvent) => !connectedGoogleEvents.some((remoteEvent) => remoteEvent.eventKey === localEvent.eventKey),
+  const visibleCalendarEvents = useMemo(() => {
+    if (googleCalendarStatus?.connected) {
+      return googleCalendarEvents
+        .slice()
+        .sort((left, right) =>
+          `${left.eventDate}${left.startTime || "99:99"}${left.title}`.localeCompare(
+            `${right.eventDate}${right.startTime || "99:99"}${right.title}`,
           ),
-        ]
-      : calendarEvents;
+        );
+    }
 
-    const today = new Date();
-    const horizon = new Date(today);
-    horizon.setDate(horizon.getDate() + 60);
-    const upcomingEvents = mergedEvents.filter((event) => {
-      const eventDate = new Date(`${event.eventDate}T12:00:00`);
-      if (Number.isNaN(eventDate.getTime())) {
-        return false;
-      }
-
-      return eventDate >= new Date(today.getFullYear(), today.getMonth(), today.getDate()) && eventDate <= horizon;
-    });
-
+    return [] as CalendarEvent[];
+  }, [googleCalendarEvents, googleCalendarStatus?.connected]);
+  const calendarMonthGrid = useMemo(() => getCalendarMonthGrid(calendarMonthAnchor), [calendarMonthAnchor]);
+  const visibleCalendarHolidayMap = useMemo(() => {
     const holidayMap = new Map<string, string>();
-    const years = new Set([today.getFullYear(), horizon.getFullYear()]);
+    const years = new Set(calendarMonthGrid.map((cell) => cell.date.getFullYear()));
+
     for (const year of years) {
       for (const [date, label] of getUSHolidaysForYear(year)) {
-        const holidayDate = new Date(`${date}T12:00:00`);
-        if (holidayDate >= new Date(today.getFullYear(), today.getMonth(), today.getDate()) && holidayDate <= horizon) {
-          holidayMap.set(date, label);
-        }
+        holidayMap.set(date, label);
       }
     }
 
-    const dateKeys = new Set<string>([...upcomingEvents.map((event) => event.eventDate), ...holidayMap.keys()]);
-    return [...dateKeys]
-      .sort((left, right) => left.localeCompare(right))
-      .map((date) => ({
-        date,
-        holidayLabel: holidayMap.get(date) || null,
-        events: upcomingEvents
-          .filter((event) => event.eventDate === date)
-          .sort((left, right) => `${left.startTime || "99:99"}${left.title}`.localeCompare(`${right.startTime || "99:99"}${right.title}`)),
-      }));
-  }, [calendarEvents, googleCalendarEvents, googleCalendarStatus?.connected]);
+    return holidayMap;
+  }, [calendarMonthGrid]);
+  const selectedCalendarEvents = useMemo(
+    () =>
+      visibleCalendarEvents.filter((event) => event.eventDate === selectedCalendarDate).sort((left, right) =>
+        `${left.startTime || "99:99"}${left.title}`.localeCompare(`${right.startTime || "99:99"}${right.title}`),
+      ),
+    [selectedCalendarDate, visibleCalendarEvents],
+  );
+  const selectedCalendarHoliday = visibleCalendarHolidayMap.get(selectedCalendarDate) || null;
 
   useEffect(() => {
     const interval = window.setInterval(() => {
@@ -1025,7 +1057,7 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
     }
   }, [getViewerAccessToken, viewer.id]);
 
-  const refreshGoogleCalendarEvents = useCallback(async () => {
+  const refreshGoogleCalendarEvents = useCallback(async (anchorDate?: Date) => {
     if (!viewer.id) {
       setGoogleCalendarEvents([]);
       return;
@@ -1038,7 +1070,12 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
     }
 
     try {
-      const response = await loadGoogleCalendarEvents({ accessToken });
+      const range = getCalendarFetchWindow(anchorDate || calendarMonthAnchor);
+      const response = await loadGoogleCalendarEvents({
+        accessToken,
+        from: range.from,
+        to: range.to,
+      });
       setGoogleCalendarEvents(
         response.events.map((event) => ({
           ...event,
@@ -1050,12 +1087,12 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
       console.error("[Verge] Failed to load live Google Calendar events:", error);
       setGoogleCalendarEvents([]);
     }
-  }, [getViewerAccessToken, viewer.id]);
+  }, [calendarMonthAnchor, getViewerAccessToken, viewer.id]);
 
-  const refreshCalendarPanel = useCallback(async () => {
+  const refreshCalendarPanel = useCallback(async (anchorDate?: Date) => {
     const [, status] = await Promise.all([refreshCalendarEvents(), refreshGoogleCalendarStatus()]);
     if (status?.connected) {
-      await refreshGoogleCalendarEvents();
+      await refreshGoogleCalendarEvents(anchorDate);
       return;
     }
 
@@ -1280,13 +1317,13 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
     }
 
     const timeout = window.setTimeout(() => {
-      void refreshCalendarPanel();
+      void refreshCalendarPanel(calendarMonthAnchor);
     }, 0);
 
     return () => {
       window.clearTimeout(timeout);
     };
-  }, [calendarOpen, refreshCalendarPanel]);
+  }, [calendarMonthAnchor, calendarOpen, refreshCalendarPanel]);
 
   useEffect(() => {
     if (!calendarOpen) {
@@ -1294,7 +1331,7 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
     }
 
     function handleWindowFocus() {
-      void refreshCalendarPanel();
+      void refreshCalendarPanel(calendarMonthAnchor);
     }
 
     window.addEventListener("focus", handleWindowFocus);
@@ -1304,7 +1341,7 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
       window.removeEventListener("focus", handleWindowFocus);
       document.removeEventListener("visibilitychange", handleWindowFocus);
     };
-  }, [calendarOpen, refreshCalendarPanel]);
+  }, [calendarMonthAnchor, calendarOpen, refreshCalendarPanel]);
 
   useEffect(() => {
     let cancelled = false;
@@ -2123,15 +2160,6 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
     }
   }
 
-  async function handleDeleteCalendarEntry(eventId: string) {
-    await deleteCalendarEvent({
-      supabase,
-      userId: viewer.id,
-      eventId,
-    });
-    await refreshCalendarPanel();
-  }
-
   async function handleSend() {
     if (!input.trim() || isLoading) {
       return;
@@ -2528,15 +2556,15 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
 
       {calendarOpen ? (
         <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/45 px-4 py-8 backdrop-blur-sm">
-          <div className="flex max-h-[85vh] w-full max-w-4xl flex-col overflow-hidden rounded-[28px] border border-white/10 bg-[#0b0e13]/95 shadow-[0_32px_120px_rgba(0,0,0,0.5)]">
+          <div className="flex max-h-[88vh] w-full max-w-6xl flex-col overflow-hidden rounded-[28px] border border-white/10 bg-[#0b0e13]/95 shadow-[0_32px_120px_rgba(0,0,0,0.5)]">
             <div className="flex items-start justify-between gap-4 border-b border-white/8 px-5 py-5">
               <div>
                 <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-sky-200/80">Calendar</p>
                 <h3 className="mt-2 text-xl font-semibold text-white">
-                  {googleCalendarStatus?.connected ? "Google calendar" : "Verge calendar"}
+                  {googleCalendarStatus?.connected ? "Google calendar" : "Connect Google calendar"}
                 </h3>
                 <p className="mt-2 max-w-2xl text-sm leading-6 text-white/55">
-                  Use this for multi-day plans, fixed commitments, workouts, and everything else that belongs on actual dates.
+                  Open your live Google Calendar inside Verge and keep plans, workouts, school, and fixed commitments on real dates.
                 </p>
               </div>
               <button
@@ -2551,12 +2579,16 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
             <div className="flex flex-wrap items-center justify-between gap-3 border-b border-white/8 px-5 py-4">
               <div>
                 <p className="text-sm font-semibold text-white/90">
-                  {fullExecutionPlan ? fullExecutionPlan.scope_label : "No current plan selected"}
+                  {googleCalendarStatus?.connected
+                    ? `${formatCalendarMonthLabel(calendarMonthAnchor)} view`
+                    : fullExecutionPlan
+                      ? fullExecutionPlan.scope_label
+                      : "No Google Calendar connected yet"}
                 </p>
                 <p className="mt-1 text-xs text-white/45">
-                  {fullExecutionPlan
-                    ? "This is your in-app calendar. Holidays are pre-labeled, synced plan blocks stay visible here, and Google just mirrors them."
-                    : "This is your in-app calendar. Connect Google here, then generate or reopen a plan before syncing it."}
+                  {googleCalendarStatus?.connected
+                    ? "This is the live Google Calendar view inside Verge. Sync a current plan to place Verge-generated blocks onto the calendar."
+                    : "Connect Google once, then Verge will show your Google Calendar directly here."}
                 </p>
                 <div className="mt-3 flex flex-wrap items-center gap-2">
                   <span
@@ -2581,7 +2613,7 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
               </div>
               <div className="flex items-center gap-2">
                 <button
-                  onClick={() => void refreshCalendarEvents()}
+                  onClick={() => void refreshCalendarPanel(calendarMonthAnchor)}
                   className="rounded-full border border-white/10 bg-white/6 px-3 py-2 text-xs text-white/70 transition hover:border-white/20 hover:bg-white/10 hover:text-white"
                   type="button"
                 >
@@ -2621,83 +2653,188 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
                 </div>
               ) : null}
 
-              {googleCalendarStatus?.connected ? (
-                <div className="mb-4 rounded-[20px] border border-sky-300/20 bg-sky-300/10 px-4 py-3 text-sm text-sky-100">
-                  Google Calendar is connected, but you can keep using this Verge calendar as the main view. Sync just mirrors events into Google.
-                </div>
-              ) : null}
-
               {calendarLoading ? (
                 <div className="rounded-[24px] border border-white/10 bg-white/[0.04] px-5 py-6 text-sm text-white/58">
                   Loading calendar events…
                 </div>
-              ) : calendarSections.length ? (
-                <div className="space-y-4">
-                  {calendarSections.map((section) => (
-                    <section key={section.date} className="rounded-[24px] border border-white/10 bg-white/[0.04] p-4">
-                      <div className="flex flex-wrap items-center justify-between gap-3">
-                        <div>
-                          <p className="text-sm font-semibold text-white">{formatCalendarDateHeading(section.date)}</p>
-                          <p className="mt-1 text-[11px] text-white/40">{section.date}</p>
-                        </div>
-                        {section.holidayLabel ? (
-                          <span className="rounded-full border border-yellow-300/20 bg-yellow-300/10 px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-yellow-100">
-                            {section.holidayLabel}
-                          </span>
-                        ) : null}
+              ) : googleCalendarStatus?.connected ? (
+                <div className="grid min-h-0 gap-5 lg:grid-cols-[minmax(0,1fr)_22rem]">
+                  <section className="rounded-[24px] border border-white/10 bg-white/[0.04] p-4">
+                    <div className="mb-4 flex items-center justify-between gap-3">
+                      <div>
+                        <p className="text-sm font-semibold text-white">{formatCalendarMonthLabel(calendarMonthAnchor)}</p>
+                        <p className="mt-1 text-[11px] uppercase tracking-[0.16em] text-white/40">
+                          Live Google calendar inside Verge
+                        </p>
                       </div>
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={() => {
+                            const nextAnchor = new Date(calendarMonthAnchor.getFullYear(), calendarMonthAnchor.getMonth() - 1, 1);
+                            setCalendarMonthAnchor(nextAnchor);
+                            setSelectedCalendarDate(toIsoCalendarDate(nextAnchor));
+                          }}
+                          className="rounded-full border border-white/10 bg-white/6 px-3 py-1.5 text-xs text-white/70 transition hover:border-white/20 hover:bg-white/10 hover:text-white"
+                          type="button"
+                        >
+                          Prev
+                        </button>
+                        <button
+                          onClick={() => {
+                            const today = new Date();
+                            setCalendarMonthAnchor(today);
+                            setSelectedCalendarDate(toIsoCalendarDate(today));
+                          }}
+                          className="rounded-full border border-white/10 bg-white/6 px-3 py-1.5 text-xs text-white/70 transition hover:border-white/20 hover:bg-white/10 hover:text-white"
+                          type="button"
+                        >
+                          Today
+                        </button>
+                        <button
+                          onClick={() => {
+                            const nextAnchor = new Date(calendarMonthAnchor.getFullYear(), calendarMonthAnchor.getMonth() + 1, 1);
+                            setCalendarMonthAnchor(nextAnchor);
+                            setSelectedCalendarDate(toIsoCalendarDate(nextAnchor));
+                          }}
+                          className="rounded-full border border-white/10 bg-white/6 px-3 py-1.5 text-xs text-white/70 transition hover:border-white/20 hover:bg-white/10 hover:text-white"
+                          type="button"
+                        >
+                          Next
+                        </button>
+                      </div>
+                    </div>
 
-                      {section.events.length ? (
-                        <div className="mt-4 space-y-3">
-                          {section.events.map((event) => (
-                            <div
-                              key={event.id}
-                              className="flex items-start justify-between gap-3 rounded-[20px] border border-white/10 bg-white/[0.05] px-4 py-3"
-                            >
+                    <div className="grid grid-cols-7 gap-2 text-center text-[11px] font-semibold uppercase tracking-[0.18em] text-white/40">
+                      {["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map((day) => (
+                        <div key={day} className="px-2 py-1">
+                          {day}
+                        </div>
+                      ))}
+                    </div>
+
+                    <div className="mt-2 grid grid-cols-7 gap-2">
+                      {calendarMonthGrid.map((cell) => {
+                        const dayEvents = visibleCalendarEvents.filter((event) => event.eventDate === cell.isoDate);
+                        const holidayLabel = visibleCalendarHolidayMap.get(cell.isoDate) || null;
+                        const isSelected = cell.isoDate === selectedCalendarDate;
+
+                        return (
+                          <button
+                            key={cell.isoDate}
+                            onClick={() => setSelectedCalendarDate(cell.isoDate)}
+                            className={`min-h-[122px] rounded-[20px] border p-3 text-left transition ${
+                              isSelected
+                                ? "border-sky-300/45 bg-sky-300/10"
+                                : cell.inCurrentMonth
+                                  ? "border-white/10 bg-white/[0.03] hover:border-white/20 hover:bg-white/[0.06]"
+                                  : "border-white/6 bg-white/[0.02] text-white/35 hover:border-white/14"
+                            }`}
+                            type="button"
+                          >
+                            <div className="flex items-start justify-between gap-2">
+                              <span
+                                className={`text-sm font-semibold ${
+                                  cell.isToday ? "text-sky-100" : cell.inCurrentMonth ? "text-white" : "text-white/35"
+                                }`}
+                              >
+                                {cell.dayNumber}
+                              </span>
+                              {cell.isToday ? (
+                                <span className="rounded-full border border-sky-300/25 bg-sky-300/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-sky-100">
+                                  Today
+                                </span>
+                              ) : null}
+                            </div>
+
+                            {holidayLabel ? <p className="mt-2 truncate text-[10px] text-yellow-100/85">{holidayLabel}</p> : null}
+
+                            <div className="mt-3 space-y-1.5">
+                              {dayEvents.slice(0, 3).map((event) => (
+                                <div
+                                  key={event.id}
+                                  className="truncate rounded-full px-2 py-1 text-[10px] font-medium text-white"
+                                  style={{ backgroundColor: event.color }}
+                                >
+                                  {event.startTime ? `${formatCalendarTimeRange(event.startTime, null)} · ` : ""}
+                                  {event.title}
+                                </div>
+                              ))}
+                              {dayEvents.length > 3 ? (
+                                <p className="text-[10px] text-white/45">+{dayEvents.length - 3} more</p>
+                              ) : null}
+                            </div>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </section>
+
+                  <section className="rounded-[24px] border border-white/10 bg-white/[0.04] p-4">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <p className="text-sm font-semibold text-white">{formatCalendarDateHeading(selectedCalendarDate)}</p>
+                        <p className="mt-1 text-[11px] text-white/40">{selectedCalendarDate}</p>
+                      </div>
+                      {selectedCalendarHoliday ? (
+                        <span className="rounded-full border border-yellow-300/20 bg-yellow-300/10 px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-yellow-100">
+                          {selectedCalendarHoliday}
+                        </span>
+                      ) : null}
+                    </div>
+
+                    <div className="mt-4 space-y-3">
+                      {selectedCalendarEvents.length ? (
+                        selectedCalendarEvents.map((event) => (
+                          <div key={event.id} className="rounded-[20px] border border-white/10 bg-white/[0.05] p-4">
+                            <div className="flex items-start gap-3">
+                              <span className="mt-1 h-3 w-3 rounded-full" style={{ backgroundColor: event.color }} />
                               <div className="min-w-0 flex-1">
                                 <div className="flex items-center gap-2">
-                                  <span
-                                    className="h-2.5 w-2.5 rounded-full"
-                                    style={{ backgroundColor: event.color }}
-                                  />
-                                  <p className="truncate text-sm font-semibold text-white/92">{event.title}</p>
+                                  <p className="truncate text-sm font-semibold text-white">{event.title}</p>
                                   <span className="rounded-full border border-white/10 bg-white/6 px-2 py-1 text-[10px] uppercase tracking-[0.14em] text-white/55">
                                     {event.kind}
                                   </span>
-                                  {googleCalendarStatus?.connected && event.externalProvider !== "google" ? (
-                                    <span className="rounded-full border border-white/10 bg-white/6 px-2 py-1 text-[10px] uppercase tracking-[0.14em] text-white/45">
-                                      Not synced
-                                    </span>
-                                  ) : null}
                                 </div>
-                                <p className="mt-2 text-xs text-white/45">
-                                  {formatCalendarTimeRange(event.startTime, event.endTime)}
-                                </p>
-                                {event.notes ? (
-                                  <p className="mt-2 text-xs leading-5 text-white/55">{event.notes}</p>
+                                <p className="mt-2 text-xs text-white/45">{formatCalendarTimeRange(event.startTime, event.endTime)}</p>
+                                {event.notes ? <p className="mt-2 text-xs leading-5 text-white/55">{event.notes}</p> : null}
+                                {event.htmlLink ? (
+                                  <a
+                                    href={event.htmlLink}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                    className="mt-3 inline-flex text-xs font-medium text-sky-200 transition hover:text-sky-100"
+                                  >
+                                    Open in Google Calendar
+                                  </a>
                                 ) : null}
                               </div>
-                              {event.externalProvider !== "google" ? (
-                                <button
-                                  onClick={() => void handleDeleteCalendarEntry(event.id)}
-                                  className="rounded-full border border-red-300/20 bg-red-300/10 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.16em] text-red-100 transition hover:bg-red-300/20"
-                                  type="button"
-                                >
-                                  Remove
-                                </button>
-                              ) : null}
                             </div>
-                          ))}
-                        </div>
+                          </div>
+                        ))
                       ) : (
-                        <p className="mt-4 text-sm text-white/55">No events on this date yet.</p>
+                        <div className="rounded-[20px] border border-dashed border-white/10 bg-white/[0.03] px-4 py-6 text-sm leading-6 text-white/55">
+                          No Google Calendar events on this day yet.
+                        </div>
                       )}
-                    </section>
-                  ))}
+                    </div>
+                  </section>
                 </div>
               ) : (
-                <div className="rounded-[24px] border border-white/10 bg-white/[0.04] px-5 py-6 text-sm leading-6 text-white/58">
-                  No calendar events yet. Ask Kai for a multi-day plan or tap <span className="font-semibold text-white/80">Add current plan</span> to place everything on dates.
+                <div className="flex min-h-[420px] items-center justify-center rounded-[24px] border border-white/10 bg-white/[0.04] px-6 py-8">
+                  <div className="max-w-xl text-center">
+                    <p className="text-2xl font-semibold text-white">Connect Google to open your calendar here</p>
+                    <p className="mt-3 text-sm leading-6 text-white/58">
+                      Once Google Calendar is connected, this modal becomes your live calendar view inside Verge. Then you can sync plans into it without leaving the app.
+                    </p>
+                    <button
+                      onClick={() => void handleConnectGoogleCalendar()}
+                      disabled={googleCalendarLoading}
+                      className="mt-6 rounded-full border border-sky-300/20 bg-sky-300/10 px-4 py-2 text-sm font-semibold text-sky-100 transition hover:bg-sky-300/20 disabled:cursor-default disabled:opacity-40"
+                      type="button"
+                    >
+                      {googleCalendarStatus?.connected ? "Reconnect Google" : "Connect Google"}
+                    </button>
+                  </div>
                 </div>
               )}
             </div>

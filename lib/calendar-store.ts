@@ -15,6 +15,7 @@ export type CalendarEvent = {
   sourceBlockId: string | null;
   externalProvider: "local" | "google";
   externalEventId: string | null;
+  htmlLink?: string | null;
   notes: string | null;
   createdAt: string;
   updatedAt: string;
@@ -98,6 +99,7 @@ function normalizeCalendarEvent(raw: Partial<CalendarEvent> | null | undefined):
     sourceBlockId: raw.sourceBlockId || null,
     externalProvider: raw.externalProvider === "google" ? "google" : "local",
     externalEventId: raw.externalEventId || null,
+    htmlLink: raw.htmlLink || null,
     notes: raw.notes || null,
     createdAt: raw.createdAt || new Date().toISOString(),
     updatedAt: raw.updatedAt || new Date().toISOString(),
