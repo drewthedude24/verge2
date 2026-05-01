@@ -36,6 +36,29 @@ function renderHtml(title: string, body: string) {
   );
 }
 
+function formatCallbackError(error: unknown) {
+  const message = error instanceof Error ? error.message : "Unknown callback error.";
+  const lower = message.toLowerCase();
+
+  if (lower.includes("redirect_uri")) {
+    return "Google rejected the redirect URI. Make sure GOOGLE_REDIRECT_URI in Vercel exactly matches the Authorized redirect URI in Google Cloud.";
+  }
+
+  if (lower.includes("invalid_client") || lower.includes("client_secret")) {
+    return "Google rejected the OAuth client credentials. Re-copy GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET into Vercel, then redeploy.";
+  }
+
+  if (lower.includes("access_denied") || lower.includes("test users")) {
+    return "This Google account is not approved for the app yet. Add it as a Google OAuth test user and try again.";
+  }
+
+  if (lower.includes("service_role")) {
+    return "SUPABASE_SERVICE_ROLE_KEY is missing or invalid in Vercel. Add the correct service role key and redeploy.";
+  }
+
+  return message;
+}
+
 export async function GET(request: NextRequest) {
   if (!isGoogleCalendarConfigured() || !isSupabaseServiceRoleConfigured()) {
     return renderHtml("Google Calendar unavailable", "This backend is missing Google Calendar credentials. Add them in Vercel and try again.");
@@ -55,7 +78,7 @@ export async function GET(request: NextRequest) {
     const userInfo = await fetchGoogleCalendarUserInfo(tokenResponse.access_token);
     const admin = createSupabaseAdminClient();
 
-    await admin.from("google_calendar_connections").upsert(
+    const { error } = await admin.from("google_calendar_connections").upsert(
       {
         user_id: payload.userId,
         google_email: userInfo?.email || null,
@@ -69,9 +92,13 @@ export async function GET(request: NextRequest) {
       { onConflict: "user_id" },
     );
 
+    if (error) {
+      throw new Error(`Supabase calendar connection save failed: ${error.message}`);
+    }
+
     return renderHtml("Google Calendar connected", "Verge is now linked to your Google Calendar. You can close this tab and return to the app.");
   } catch (error) {
     console.error("[Google Calendar] OAuth callback failed:", error);
-    return renderHtml("Connection failed", "Verge could not finish the Google Calendar connection. Try again from the Calendar panel.");
+    return renderHtml("Connection failed", formatCallbackError(error));
   }
 }

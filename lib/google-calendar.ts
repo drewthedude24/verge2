@@ -4,7 +4,12 @@ import type { CalendarEvent } from "@/lib/calendar-store";
 const GOOGLE_AUTH_BASE_URL = "https://accounts.google.com/o/oauth2/v2/auth";
 const GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
 const GOOGLE_CALENDAR_API_BASE_URL = "https://www.googleapis.com/calendar/v3";
-const GOOGLE_CALENDAR_SCOPE = "https://www.googleapis.com/auth/calendar";
+const GOOGLE_CALENDAR_SCOPES = [
+  "openid",
+  "email",
+  "profile",
+  "https://www.googleapis.com/auth/calendar",
+];
 
 export type GoogleCalendarConnectionRow = {
   user_id: string;
@@ -107,7 +112,7 @@ export function buildGoogleCalendarAuthUrl(userId: string) {
   url.searchParams.set("response_type", "code");
   url.searchParams.set("access_type", "offline");
   url.searchParams.set("prompt", "consent");
-  url.searchParams.set("scope", GOOGLE_CALENDAR_SCOPE);
+  url.searchParams.set("scope", GOOGLE_CALENDAR_SCOPES.join(" "));
   url.searchParams.set("include_granted_scopes", "true");
   url.searchParams.set("state", buildGoogleOAuthState(userId));
   return url.toString();
@@ -123,7 +128,8 @@ async function postGoogleToken(params: URLSearchParams) {
   });
 
   if (!response.ok) {
-    throw new Error(`Google token exchange failed with status ${response.status}.`);
+    const details = await response.text().catch(() => "");
+    throw new Error(`Google token exchange failed with status ${response.status}. ${details.slice(0, 320)}`);
   }
 
   return (await response.json()) as GoogleTokenResponse;
