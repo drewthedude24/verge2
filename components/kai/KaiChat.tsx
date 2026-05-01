@@ -1010,6 +1010,10 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
     }
   }, [getViewerAccessToken, viewer.id]);
 
+  const refreshCalendarPanel = useCallback(async () => {
+    await Promise.all([refreshCalendarEvents(), refreshGoogleCalendarStatus()]);
+  }, [refreshCalendarEvents, refreshGoogleCalendarStatus]);
+
   const refreshMultiplayerPlayers = useCallback(async () => {
     if (!supabase || !viewer.id) {
       setMultiplayerPlayers([]);
@@ -1228,13 +1232,31 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
     }
 
     const timeout = window.setTimeout(() => {
-      void refreshGoogleCalendarStatus();
+      void refreshCalendarPanel();
     }, 0);
 
     return () => {
       window.clearTimeout(timeout);
     };
-  }, [calendarOpen, refreshGoogleCalendarStatus]);
+  }, [calendarOpen, refreshCalendarPanel]);
+
+  useEffect(() => {
+    if (!calendarOpen) {
+      return;
+    }
+
+    function handleWindowFocus() {
+      void refreshCalendarPanel();
+    }
+
+    window.addEventListener("focus", handleWindowFocus);
+    document.addEventListener("visibilitychange", handleWindowFocus);
+
+    return () => {
+      window.removeEventListener("focus", handleWindowFocus);
+      document.removeEventListener("visibilitychange", handleWindowFocus);
+    };
+  }, [calendarOpen, refreshCalendarPanel]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1987,7 +2009,7 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
         plan: fullExecutionPlan,
       });
       setCalendarStatus("Current plan added to Calendar.");
-      await refreshCalendarEvents();
+      await refreshCalendarPanel();
     } finally {
       setCalendarImporting(false);
     }
@@ -2044,8 +2066,7 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
       });
 
       setCalendarStatus(`Synced ${result.syncedCount} events to Google Calendar.`);
-      await refreshCalendarEvents();
-      await refreshGoogleCalendarStatus();
+      await refreshCalendarPanel();
     } catch (error) {
       console.error("[Verge] Failed to sync Google Calendar events:", error);
       setCalendarStatus("Google Calendar sync failed. If this is your first time, connect Google first and try again.");
@@ -2060,7 +2081,7 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
       userId: viewer.id,
       eventId,
     });
-    await refreshCalendarEvents();
+    await refreshCalendarPanel();
   }
 
   async function handleSend() {
@@ -2158,7 +2179,7 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
   function openCalendar() {
     setCalendarStatus(null);
     setCalendarOpen(true);
-    void refreshGoogleCalendarStatus();
+    void refreshCalendarPanel();
   }
 
   async function handleSavePreferences() {
@@ -2483,7 +2504,9 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
                   {fullExecutionPlan ? fullExecutionPlan.scope_label : "No current plan selected"}
                 </p>
                 <p className="mt-1 text-xs text-white/45">
-                  Holidays are pre-labeled. Imported plan blocks keep their own colors by type.
+                  {fullExecutionPlan
+                    ? "Holidays are pre-labeled. Imported plan blocks keep their own colors by type."
+                    : "Connect Google here, then generate or reopen a plan before syncing it to your calendar."}
                 </p>
                 <div className="mt-3 flex flex-wrap items-center gap-2">
                   <span
