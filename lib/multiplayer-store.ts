@@ -35,6 +35,9 @@ type PlayerLiveStatusRow = {
   updated_at: string;
 };
 
+export type UserProfileRealtimeRow = UserProfileRow;
+export type PlayerLiveStatusRealtimeRow = PlayerLiveStatusRow;
+
 function userProfilesTable(supabase: BrowserSupabaseClient) {
   return supabase.from("user_profiles" as never);
 }
@@ -62,6 +65,58 @@ function normalizePlayer(row: PlayerLiveStatusRow | null | undefined, profile: U
     lockInMode: Boolean(row.lock_in_mode),
     updatedAt: row.updated_at,
   };
+}
+
+export function mergeRealtimePlayer(
+  currentPlayers: LeaderboardPlayer[],
+  row: PlayerLiveStatusRealtimeRow | null | undefined,
+  profile?: UserProfileRealtimeRow | null,
+) {
+  const normalized = normalizePlayer(row, profile);
+  if (!normalized) {
+    return currentPlayers;
+  }
+
+  const existingIndex = currentPlayers.findIndex((player) => player.userId === normalized.userId);
+  if (existingIndex === -1) {
+    return [...currentPlayers, normalized];
+  }
+
+  const nextPlayers = currentPlayers.slice();
+  nextPlayers[existingIndex] = {
+    ...nextPlayers[existingIndex],
+    ...normalized,
+    displayName: profile?.display_name || nextPlayers[existingIndex].displayName,
+    email: profile?.email ?? nextPlayers[existingIndex].email,
+  };
+  return nextPlayers;
+}
+
+export function removeRealtimePlayer(currentPlayers: LeaderboardPlayer[], userId: string | null | undefined) {
+  if (!userId) {
+    return currentPlayers;
+  }
+
+  return currentPlayers.filter((player) => player.userId !== userId);
+}
+
+export function mergeRealtimeProfile(
+  currentPlayers: LeaderboardPlayer[],
+  profile: UserProfileRealtimeRow | null | undefined,
+) {
+  if (!profile?.user_id) {
+    return currentPlayers;
+  }
+
+  return currentPlayers.map((player) =>
+    player.userId !== profile.user_id
+      ? player
+      : {
+          ...player,
+          displayName: profile.display_name || player.displayName,
+          email: profile.email ?? player.email,
+        },
+  );
 }
 
 export async function upsertUserProfile({

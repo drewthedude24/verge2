@@ -49,9 +49,14 @@ import {
 } from "@/lib/preferences-store";
 import {
   loadLeaderboardPlayers,
+  mergeRealtimePlayer,
+  mergeRealtimeProfile,
   publishPlayerLiveStatus,
+  removeRealtimePlayer,
+  type PlayerLiveStatusRealtimeRow,
   upsertUserProfile,
   type LeaderboardPlayer,
+  type UserProfileRealtimeRow,
 } from "@/lib/multiplayer-store";
 import { buildAccountScoreboard, buildScoreboardSummary } from "@/lib/scoreboard";
 import { createClient, isSupabaseConfigured } from "@/lib/supabase";
@@ -1381,14 +1386,44 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
     });
 
     const channel = supabase
-      .channel(`verge-live-leaderboard:${viewer.id}`)
-      .on("postgres_changes", { event: "*", schema: "public", table: "player_live_status" }, () => {
-        void refreshMultiplayerPlayers();
+      .channel("verge-live-leaderboard")
+      .on("postgres_changes", { event: "*", schema: "public", table: "player_live_status" }, (payload) => {
+        const eventType = payload.eventType;
+        if (eventType === "DELETE") {
+          const oldRow = payload.old as Partial<PlayerLiveStatusRealtimeRow> | null;
+          setMultiplayerPlayers((currentPlayers) => removeRealtimePlayer(currentPlayers, oldRow?.user_id));
+          return;
+        }
+
+        const nextRow = payload.new as PlayerLiveStatusRealtimeRow | null;
+        if (!nextRow) {
+          void refreshMultiplayerPlayers();
+          return;
+        }
+
+        setMultiplayerPlayers((currentPlayers) => mergeRealtimePlayer(currentPlayers, nextRow));
       })
-      .on("postgres_changes", { event: "*", schema: "public", table: "user_profiles" }, () => {
-        void refreshMultiplayerPlayers();
+      .on("postgres_changes", { event: "*", schema: "public", table: "user_profiles" }, (payload) => {
+        const eventType = payload.eventType;
+        if (eventType === "DELETE") {
+          const oldRow = payload.old as Partial<UserProfileRealtimeRow> | null;
+          setMultiplayerPlayers((currentPlayers) => removeRealtimePlayer(currentPlayers, oldRow?.user_id));
+          return;
+        }
+
+        const nextRow = payload.new as UserProfileRealtimeRow | null;
+        if (!nextRow) {
+          void refreshMultiplayerPlayers();
+          return;
+        }
+
+        setMultiplayerPlayers((currentPlayers) => mergeRealtimeProfile(currentPlayers, nextRow));
       })
-      .subscribe();
+      .subscribe((status) => {
+        if (status === "SUBSCRIBED") {
+          void refreshMultiplayerPlayers();
+        }
+      });
 
     return () => {
       cancelled = true;
@@ -1402,7 +1437,7 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
       return;
     }
 
-    const publishElapsedSeconds = Math.floor(currentTrackedElapsedSeconds / 5) * 5;
+    const publishElapsedSeconds = Math.max(0, Math.floor(currentTrackedElapsedSeconds));
     const timeout = window.setTimeout(() => {
       void publishPlayerLiveStatus({
         supabase,
@@ -1435,6 +1470,20 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
     timerRunning,
     viewer.id,
   ]);
+
+  useEffect(() => {
+    if (!supabase || !viewer.id) {
+      return;
+    }
+
+    const interval = window.setInterval(() => {
+      void refreshMultiplayerPlayers();
+    }, 15000);
+
+    return () => {
+      window.clearInterval(interval);
+    };
+  }, [refreshMultiplayerPlayers, supabase, viewer.id]);
 
   useEffect(() => {
     const frame = window.requestAnimationFrame(() => {
