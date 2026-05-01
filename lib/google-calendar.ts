@@ -36,6 +36,25 @@ type GoogleUserInfo = {
   email?: string;
 };
 
+type GoogleCalendarListEvent = {
+  id?: string;
+  summary?: string;
+  description?: string;
+  colorId?: string;
+  htmlLink?: string;
+  start?: {
+    date?: string;
+    dateTime?: string;
+  };
+  end?: {
+    date?: string;
+    dateTime?: string;
+  };
+  extendedProperties?: {
+    private?: Record<string, string | undefined>;
+  };
+};
+
 function getGoogleConfig() {
   return {
     clientId: process.env.GOOGLE_CLIENT_ID?.trim() || "",
@@ -203,6 +222,35 @@ export function getGoogleCalendarColorId(kind: CalendarEvent["kind"]) {
   }
 }
 
+export function getGoogleCalendarColorHex(colorId?: string | null) {
+  switch (colorId) {
+    case "1":
+      return "#a4bdfc";
+    case "2":
+      return "#7ae7bf";
+    case "3":
+      return "#dbadff";
+    case "4":
+      return "#ff887c";
+    case "5":
+      return "#fbd75b";
+    case "6":
+      return "#ffb878";
+    case "7":
+      return "#46d6db";
+    case "8":
+      return "#e1e1e1";
+    case "9":
+      return "#5484ed";
+    case "10":
+      return "#51b749";
+    case "11":
+      return "#dc2127";
+    default:
+      return "#60a5fa";
+  }
+}
+
 function buildGoogleCalendarEventPayload(event: CalendarEvent, timeZone: string) {
   const shared = {
     summary: event.title,
@@ -281,4 +329,31 @@ export async function createOrUpdateGoogleCalendarEvent({
   })) as { id?: string | null };
 
   return response.id || null;
+}
+
+export async function listGoogleCalendarEvents({
+  accessToken,
+  calendarId,
+  timeMin,
+  timeMax,
+}: {
+  accessToken: string;
+  calendarId: string;
+  timeMin: string;
+  timeMax: string;
+}) {
+  const url = new URL(`${GOOGLE_CALENDAR_API_BASE_URL}/calendars/${encodeURIComponent(calendarId)}/events`);
+  url.searchParams.set("singleEvents", "true");
+  url.searchParams.set("orderBy", "startTime");
+  url.searchParams.set("timeMin", timeMin);
+  url.searchParams.set("timeMax", timeMax);
+  url.searchParams.set("maxResults", "2500");
+
+  const response = (await requestGoogleCalendarJson(url.toString(), {
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+    },
+  })) as { items?: GoogleCalendarListEvent[] | null };
+
+  return response.items || [];
 }

@@ -59,3 +59,47 @@ export async function syncGoogleCalendarEvents({
     }),
   });
 }
+
+export async function loadGoogleCalendarEvents({
+  accessToken,
+  from,
+  to,
+}: {
+  accessToken: string;
+  from?: string;
+  to?: string;
+}) {
+  const query = new URLSearchParams();
+  if (from) {
+    query.set("from", from);
+  }
+  if (to) {
+    query.set("to", to);
+  }
+
+  const path = query.size ? `/api/google-calendar/events?${query.toString()}` : "/api/google-calendar/events";
+  return requestAuthorizedJson<{
+    connected: boolean;
+    calendarId: string | null;
+    events: Array<{
+      id: string;
+      eventKey: string;
+      title: string;
+      eventDate: string;
+      startTime: string | null;
+      endTime: string | null;
+      kind: CalendarEvent["kind"];
+      color: string;
+      status: CalendarEvent["status"];
+      sourcePlanKey: string | null;
+      sourceBlockId: string | null;
+      externalProvider: "google";
+      externalEventId: string | null;
+      notes: string | null;
+      htmlLink?: string | null;
+    }>;
+  }>(path, accessToken, {
+    method: "GET",
+    cache: "no-store",
+  });
+}

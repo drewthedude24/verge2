@@ -15,6 +15,7 @@ import {
 } from "@/lib/calendar-store";
 import {
   getGoogleCalendarAuthUrl,
+  loadGoogleCalendarEvents,
   loadGoogleCalendarStatus,
   syncGoogleCalendarEvents,
   type GoogleCalendarStatus,
@@ -507,6 +508,7 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
   const [calendarLoading, setCalendarLoading] = useState(true);
   const [calendarImporting, setCalendarImporting] = useState(false);
   const [calendarEvents, setCalendarEvents] = useState<CalendarEvent[]>([]);
+  const [googleCalendarEvents, setGoogleCalendarEvents] = useState<CalendarEvent[]>([]);
   const [calendarStatus, setCalendarStatus] = useState<string | null>(null);
   const [googleCalendarStatus, setGoogleCalendarStatus] = useState<GoogleCalendarStatus | null>(null);
   const [googleCalendarLoading, setGoogleCalendarLoading] = useState(false);
@@ -838,10 +840,21 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
       (lastRequestWantedCalendar || fullExecutionPlan.timeline_mode === "multi_day"),
   );
   const calendarSections = useMemo(() => {
+    const connectedGoogleEvents = googleCalendarStatus?.connected ? googleCalendarEvents : [];
+    const localOnlyEvents = calendarEvents.filter((event) => event.externalProvider !== "google");
+    const mergedEvents = googleCalendarStatus?.connected
+      ? [
+          ...connectedGoogleEvents,
+          ...localOnlyEvents.filter(
+            (localEvent) => !connectedGoogleEvents.some((remoteEvent) => remoteEvent.eventKey === localEvent.eventKey),
+          ),
+        ]
+      : calendarEvents;
+
     const today = new Date();
     const horizon = new Date(today);
     horizon.setDate(horizon.getDate() + 60);
-    const upcomingEvents = calendarEvents.filter((event) => {
+    const upcomingEvents = mergedEvents.filter((event) => {
       const eventDate = new Date(`${event.eventDate}T12:00:00`);
       if (Number.isNaN(eventDate.getTime())) {
         return false;
@@ -871,7 +884,7 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
           .filter((event) => event.eventDate === date)
           .sort((left, right) => `${left.startTime || "99:99"}${left.title}`.localeCompare(`${right.startTime || "99:99"}${right.title}`)),
       }));
-  }, [calendarEvents]);
+  }, [calendarEvents, googleCalendarEvents, googleCalendarStatus?.connected]);
 
   useEffect(() => {
     const interval = window.setInterval(() => {
@@ -989,30 +1002,65 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
   const refreshGoogleCalendarStatus = useCallback(async () => {
     if (!viewer.id) {
       setGoogleCalendarStatus(null);
-      return;
+      return null;
     }
 
     const accessToken = await getViewerAccessToken();
     if (!accessToken) {
       setGoogleCalendarStatus(null);
-      return;
+      return null;
     }
 
     setGoogleCalendarLoading(true);
     try {
       const status = await loadGoogleCalendarStatus(accessToken);
       setGoogleCalendarStatus(status);
+      return status;
     } catch (error) {
       console.error("[Verge] Failed to load Google Calendar status:", error);
       setGoogleCalendarStatus(null);
+      return null;
     } finally {
       setGoogleCalendarLoading(false);
     }
   }, [getViewerAccessToken, viewer.id]);
 
+  const refreshGoogleCalendarEvents = useCallback(async () => {
+    if (!viewer.id) {
+      setGoogleCalendarEvents([]);
+      return;
+    }
+
+    const accessToken = await getViewerAccessToken();
+    if (!accessToken) {
+      setGoogleCalendarEvents([]);
+      return;
+    }
+
+    try {
+      const response = await loadGoogleCalendarEvents({ accessToken });
+      setGoogleCalendarEvents(
+        response.events.map((event) => ({
+          ...event,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        })),
+      );
+    } catch (error) {
+      console.error("[Verge] Failed to load live Google Calendar events:", error);
+      setGoogleCalendarEvents([]);
+    }
+  }, [getViewerAccessToken, viewer.id]);
+
   const refreshCalendarPanel = useCallback(async () => {
-    await Promise.all([refreshCalendarEvents(), refreshGoogleCalendarStatus()]);
-  }, [refreshCalendarEvents, refreshGoogleCalendarStatus]);
+    const [, status] = await Promise.all([refreshCalendarEvents(), refreshGoogleCalendarStatus()]);
+    if (status?.connected) {
+      await refreshGoogleCalendarEvents();
+      return;
+    }
+
+    setGoogleCalendarEvents([]);
+  }, [refreshCalendarEvents, refreshGoogleCalendarEvents, refreshGoogleCalendarStatus]);
 
   const refreshMultiplayerPlayers = useCallback(async () => {
     if (!supabase || !viewer.id) {
@@ -2484,7 +2532,9 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
             <div className="flex items-start justify-between gap-4 border-b border-white/8 px-5 py-5">
               <div>
                 <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-sky-200/80">Calendar</p>
-                <h3 className="mt-2 text-xl font-semibold text-white">Verge calendar</h3>
+                <h3 className="mt-2 text-xl font-semibold text-white">
+                  {googleCalendarStatus?.connected ? "Google calendar" : "Verge calendar"}
+                </h3>
                 <p className="mt-2 max-w-2xl text-sm leading-6 text-white/55">
                   Use this for multi-day plans, fixed commitments, workouts, and everything else that belongs on actual dates.
                 </p>
@@ -2614,15 +2664,11 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
                                   <span className="rounded-full border border-white/10 bg-white/6 px-2 py-1 text-[10px] uppercase tracking-[0.14em] text-white/55">
                                     {event.kind}
                                   </span>
-                                  <span
-                                    className={`rounded-full border px-2 py-1 text-[10px] uppercase tracking-[0.14em] ${
-                                      event.externalProvider === "google"
-                                        ? "border-sky-300/20 bg-sky-300/10 text-sky-100"
-                                        : "border-white/10 bg-white/6 text-white/45"
-                                    }`}
-                                  >
-                                    {event.externalProvider === "google" ? "Google synced" : "Verge only"}
-                                  </span>
+                                  {googleCalendarStatus?.connected && event.externalProvider !== "google" ? (
+                                    <span className="rounded-full border border-white/10 bg-white/6 px-2 py-1 text-[10px] uppercase tracking-[0.14em] text-white/45">
+                                      Not synced
+                                    </span>
+                                  ) : null}
                                 </div>
                                 <p className="mt-2 text-xs text-white/45">
                                   {formatCalendarTimeRange(event.startTime, event.endTime)}
@@ -2631,13 +2677,15 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
                                   <p className="mt-2 text-xs leading-5 text-white/55">{event.notes}</p>
                                 ) : null}
                               </div>
-                              <button
-                                onClick={() => void handleDeleteCalendarEntry(event.id)}
-                                className="rounded-full border border-red-300/20 bg-red-300/10 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.16em] text-red-100 transition hover:bg-red-300/20"
-                                type="button"
-                              >
-                                Remove
-                              </button>
+                              {event.externalProvider !== "google" ? (
+                                <button
+                                  onClick={() => void handleDeleteCalendarEntry(event.id)}
+                                  className="rounded-full border border-red-300/20 bg-red-300/10 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.16em] text-red-100 transition hover:bg-red-300/20"
+                                  type="button"
+                                >
+                                  Remove
+                                </button>
+                              ) : null}
                             </div>
                           ))}
                         </div>
