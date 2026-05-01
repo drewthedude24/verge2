@@ -43,3 +43,6 @@ next-env.d.ts
 
 # Electron build output
 /dist/
+
+# local toolchain
+/.tools/

@@ -9,8 +9,8 @@ You talk through your day or week, Kai turns it into a schedule, and Verge gives
 ```bash
 git clone https://github.com/CodedMed/Verge.git
 cd Verge
-npm install
-npm run dev
+make setup
+make dev
 ```
 
 That’s the main setup now.
@@ -52,6 +52,13 @@ npm run dev
 
 Verge is currently set up best for macOS development.
 
+If your Mac has an older system Node installed, use the built-in project toolchain instead of global `npm`:
+
+```bash
+make setup
+make dev
+```
+
 If `localhost:3000` is already in use, stop the old process first and run `npm run dev` again.
 
 ## Windows Setup
@@ -69,6 +76,8 @@ cd Verge
 npm install
 npm run dev
 ```
+
+Verge requires Node `20.9+`. If Windows shows an older Node version, update Node first and then rerun the commands above.
 
 If the Electron window does not open right away, open:
 
@@ -92,6 +101,15 @@ npm run lint
 npm run build:next
 npm run dist:mac
 npm run dist:win
+```
+
+Mac/Linux local toolchain helpers:
+
+```bash
+make setup
+make dev
+make lint
+make build-next
 ```
 
 ## Project Structure

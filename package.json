@@ -4,6 +4,9 @@
   "private": true,
   "description": "Talk through your day. Get a plan.",
   "author": "Verge",
+  "engines": {
+    "node": ">=20.9.0"
+  },
   "main": "electron/main.js",
   "scripts": {
     "dev:next": "node node_modules/next/dist/bin/next dev",
