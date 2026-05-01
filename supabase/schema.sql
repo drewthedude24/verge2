@@ -98,16 +98,22 @@ create table if not exists public.user_profiles (
 
 create table if not exists public.player_live_status (
   user_id uuid primary key references auth.users(id) on delete cascade,
-  total_earned_points integer not null default 0,
-  total_available_points integer not null default 0,
-  session_earned_points integer not null default 0,
-  session_available_points integer not null default 0,
+  total_earned_points numeric(10,1) not null default 0,
+  total_available_points numeric(10,1) not null default 0,
+  session_earned_points numeric(10,1) not null default 0,
+  session_available_points numeric(10,1) not null default 0,
   current_task_title text,
   current_elapsed_seconds integer not null default 0,
   is_timer_running boolean not null default false,
   lock_in_mode boolean not null default false,
   updated_at timestamptz not null default timezone('utc', now())
 );
+
+alter table public.player_live_status
+  alter column total_earned_points type numeric(10,1) using total_earned_points::numeric,
+  alter column total_available_points type numeric(10,1) using total_available_points::numeric,
+  alter column session_earned_points type numeric(10,1) using session_earned_points::numeric,
+  alter column session_available_points type numeric(10,1) using session_available_points::numeric;
 
 create index if not exists planner_runs_user_created_idx on public.planner_runs (user_id, created_at desc);
 create index if not exists planner_blocks_run_position_idx on public.planner_blocks (run_id, position);

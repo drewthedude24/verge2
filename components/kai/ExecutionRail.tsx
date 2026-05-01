@@ -2,6 +2,7 @@
 
 import { useMemo, useState } from "react";
 import type { KaiExecutionBlock, KaiExecutionPlan, KaiUserProfile } from "@/lib/kai-prompt";
+import { formatLockInPoints, type LockInMonitorPhase, type LockInPaperMode } from "@/lib/lock-in-vision";
 import type { LeaderboardPlayer } from "@/lib/multiplayer-store";
 import type { PlannerHistoryRun } from "@/lib/plan-store";
 import { formatTrackedDuration, getBlockTargetPoints, type ScoreboardSummary } from "@/lib/scoreboard";
@@ -22,11 +23,19 @@ interface ExecutionRailProps {
   timerProgressPercent: number;
   activeRunSource: "live" | "history" | "none";
   lockInModeEnabled: boolean;
+  lockInPaperMode: LockInPaperMode | null;
+  lockInMonitorPhase: LockInMonitorPhase;
+  lockInCameraError: string | null;
+  lockInWarningCount: number;
+  lockInPenaltyPoints: number;
+  lockInDownSeconds: number;
+  lockInAlertActive: boolean;
   onUpdateBlockStatus: (blockId: string, status: KaiExecutionBlock["status"]) => void;
   onStartTimer: () => void;
   onPauseTimer: () => void;
   onResetTimer: () => void;
   onToggleLockInMode: () => void;
+  onSetLockInPaperMode: (mode: LockInPaperMode) => void;
   onSelectHistoryRun: (runId: string) => void;
   onDeleteHistoryRun: (runId: string) => void;
   onReturnToLivePlan: () => void;
@@ -115,6 +124,56 @@ function MetricCard({ label, value }: { label: string; value: string }) {
   );
 }
 
+function lockInStatusCopy({
+  enabled,
+  paperMode,
+  phase,
+  downSeconds,
+  warningCount,
+  timerRunning,
+}: {
+  enabled: boolean;
+  paperMode: LockInPaperMode | null;
+  phase: LockInMonitorPhase;
+  downSeconds: number;
+  warningCount: number;
+  timerRunning: boolean;
+}) {
+  if (!enabled) {
+    return "Lock-in mode lets the user opt into camera-based focus checks for this task.";
+  }
+
+  if (!paperMode) {
+    return "Choose whether this task uses paper. Verge only treats long downward looks as phone distraction when the task is computer-only.";
+  }
+
+  if (paperMode === "paper_allowed") {
+    return "Paper mode is enabled, so Verge will not flag long downward looks while you write notes.";
+  }
+
+  if (!timerRunning) {
+    return "Computer-only mode is armed. Start the timer to begin camera focus checks for this task.";
+  }
+
+  if (phase === "requesting_camera") {
+    return "Requesting camera access for computer-only monitoring…";
+  }
+
+  if (phase === "calibrating") {
+    return "Camera is calibrating to your normal screen posture. Keep your eyes on the screen for a moment.";
+  }
+
+  if (phase === "alert") {
+    return `Red lock-in warning active. This task has ${warningCount} warning${warningCount === 1 ? "" : "s"} so far.`;
+  }
+
+  if (downSeconds > 0) {
+    return `Looking down for ${formatTrackedDuration(downSeconds)}. Verge will warn you if it stays that way too long.`;
+  }
+
+  return "Computer-only lock-in is active. Verge is watching for long downward looks that usually mean phone distraction.";
+}
+
 export default function ExecutionRail({
   liveModelLabel,
   plan,
@@ -129,11 +188,19 @@ export default function ExecutionRail({
   timerProgressPercent,
   activeRunSource,
   lockInModeEnabled,
+  lockInPaperMode,
+  lockInMonitorPhase,
+  lockInCameraError,
+  lockInWarningCount,
+  lockInPenaltyPoints,
+  lockInDownSeconds,
+  lockInAlertActive,
   onUpdateBlockStatus,
   onStartTimer,
   onPauseTimer,
   onResetTimer,
   onToggleLockInMode,
+  onSetLockInPaperMode,
   onSelectHistoryRun,
   onDeleteHistoryRun,
   onReturnToLivePlan,
@@ -229,7 +296,7 @@ export default function ExecutionRail({
               </div>
               <div className="flex flex-col items-end gap-2">
                 <span className="rounded-full border border-orange-300/20 bg-orange-300/10 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-orange-100">
-                  {currentScoreEntry?.targetPoints || getBlockTargetPoints(currentBlock)} pts
+                  {formatLockInPoints(currentScoreEntry?.targetPoints || getBlockTargetPoints(currentBlock))} pts
                 </span>
                 <span className="rounded-full border border-white/10 bg-white/6 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-white/60">
                   {currentScoreEntry?.priorityBand || "medium"}
@@ -243,7 +310,7 @@ export default function ExecutionRail({
                   <p className="mt-2 text-3xl font-semibold tracking-tight text-white">{timerLabel}</p>
                   {currentScoreEntry ? (
                     <p className="mt-2 text-xs text-white/50">
-                      {currentScoreEntry.earnedPoints}/{currentScoreEntry.targetPoints} pts earned
+                      {formatLockInPoints(currentScoreEntry.earnedPoints)}/{formatLockInPoints(currentScoreEntry.targetPoints)} pts earned
                     </p>
                   ) : null}
                 </div>
@@ -302,11 +369,85 @@ export default function ExecutionRail({
                   </button>
                 ) : null}
               </div>
-              <p className="mt-3 text-[11px] leading-5 text-white/45">
-                {lockInModeEnabled
-                  ? "Lock-in mode is armed for this block. Camera-based focus checks are still optional and will come later."
-                  : "Lock-in mode lets the user opt into future camera-based focus checks for this task."}
-              </p>
+              <div className="mt-4 rounded-[18px] border border-white/10 bg-black/15 px-3 py-3">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="rounded-full border border-white/10 bg-white/6 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-white/60">
+                    {lockInModeEnabled ? "Lock-in armed" : "Lock-in off"}
+                  </span>
+                  {lockInPaperMode ? (
+                    <span className="rounded-full border border-white/10 bg-white/6 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-white/60">
+                      {lockInPaperMode === "paper_allowed" ? "Paper okay" : "Computer only"}
+                    </span>
+                  ) : null}
+                  {lockInModeEnabled && lockInPaperMode === "computer_only" ? (
+                    <span
+                      className={`rounded-full border px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] ${
+                        lockInAlertActive
+                          ? "border-red-300/30 bg-red-300/15 text-red-100"
+                          : lockInMonitorPhase === "monitoring"
+                            ? "border-emerald-300/20 bg-emerald-300/10 text-emerald-100"
+                            : "border-white/10 bg-white/6 text-white/60"
+                      }`}
+                    >
+                      {lockInAlertActive
+                        ? "Warning live"
+                        : lockInMonitorPhase === "monitoring"
+                          ? "Watching focus"
+                          : lockInMonitorPhase.replace("_", " ")}
+                    </span>
+                  ) : null}
+                  {lockInWarningCount > 0 ? (
+                    <span className="rounded-full border border-amber-300/20 bg-amber-300/10 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-amber-100">
+                      {lockInWarningCount} warning{lockInWarningCount === 1 ? "" : "s"}
+                    </span>
+                  ) : null}
+                  {lockInPenaltyPoints > 0 ? (
+                    <span className="rounded-full border border-red-300/20 bg-red-300/10 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-red-100">
+                      -{formatLockInPoints(lockInPenaltyPoints)} pts
+                    </span>
+                  ) : null}
+                </div>
+
+                {lockInModeEnabled && !lockInPaperMode ? (
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    <button
+                      onClick={() => onSetLockInPaperMode("computer_only")}
+                      className="rounded-full border border-white/10 bg-white/6 px-3 py-2 text-xs text-white/75 transition hover:border-white/20 hover:bg-white/10 hover:text-white"
+                      type="button"
+                    >
+                      Only computer
+                    </button>
+                    <button
+                      onClick={() => onSetLockInPaperMode("paper_allowed")}
+                      className="rounded-full border border-white/10 bg-white/6 px-3 py-2 text-xs text-white/75 transition hover:border-white/20 hover:bg-white/10 hover:text-white"
+                      type="button"
+                    >
+                      I&apos;m using paper too
+                    </button>
+                  </div>
+                ) : null}
+
+                {lockInModeEnabled && lockInPaperMode === "computer_only" && lockInDownSeconds > 0 ? (
+                  <p className="mt-3 text-[11px] font-medium text-amber-100/80">
+                    Downward look timer: {formatTrackedDuration(lockInDownSeconds)}
+                  </p>
+                ) : null}
+
+                {lockInCameraError ? (
+                  <p className="mt-3 text-[11px] leading-5 text-red-100/80">{lockInCameraError}</p>
+                ) : null}
+
+                <p className="mt-3 text-[11px] leading-5 text-white/45">
+                  {lockInStatusCopy({
+                    enabled: lockInModeEnabled,
+                    paperMode: lockInPaperMode,
+                    phase: lockInMonitorPhase,
+                    downSeconds: lockInDownSeconds,
+                    warningCount: lockInWarningCount,
+                    timerRunning,
+                  })}
+                </p>
+              </div>
             </div>
           </>
         ) : (
@@ -341,7 +482,7 @@ export default function ExecutionRail({
                       </span>
                       {getBlockTargetPoints(block) > 0 ? (
                         <span className="rounded-full border border-orange-300/20 bg-orange-300/10 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-orange-100">
-                          {getBlockTargetPoints(block)} pts
+                          {formatLockInPoints(getBlockTargetPoints(block))} pts
                         </span>
                       ) : null}
                       <span className="text-[11px] text-white/45">{block.date_label || plan?.scope_label}</span>
@@ -391,8 +532,8 @@ export default function ExecutionRail({
             </p>
           </div>
           <div className="text-right">
-            <p className="text-lg font-semibold text-white">{scoreboard.totalEarnedPoints} pts</p>
-            <p className="text-[11px] text-white/40">of {scoreboard.totalAvailablePoints}</p>
+            <p className="text-lg font-semibold text-white">{formatLockInPoints(scoreboard.totalEarnedPoints)} pts</p>
+            <p className="text-[11px] text-white/40">of {formatLockInPoints(scoreboard.totalAvailablePoints)}</p>
           </div>
         </button>
 
@@ -406,7 +547,7 @@ export default function ExecutionRail({
                     <h4 className="mt-2 text-sm font-semibold text-white">{currentScoreEntry.title}</h4>
                   </div>
                   <span className="rounded-full border border-orange-300/20 bg-black/10 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-orange-50">
-                    {currentScoreEntry.earnedPoints}/{currentScoreEntry.targetPoints} pts
+                    {formatLockInPoints(currentScoreEntry.earnedPoints)}/{formatLockInPoints(currentScoreEntry.targetPoints)} pts
                   </span>
                 </div>
                 <p className="mt-2 text-xs leading-5 text-white/70">
@@ -432,7 +573,7 @@ export default function ExecutionRail({
                         </p>
                       </div>
                       <span className="rounded-full border border-emerald-300/20 bg-emerald-300/10 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-emerald-100">
-                        {entry.earnedPoints} pts
+                        {formatLockInPoints(entry.earnedPoints)} pts
                       </span>
                     </div>
                   ))}
@@ -462,10 +603,10 @@ export default function ExecutionRail({
                       </div>
                       <div className="text-right">
                         <span className="rounded-full border border-sky-300/20 bg-sky-300/10 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-sky-100">
-                          {player.totalEarnedPoints} pts
+                          {formatLockInPoints(player.totalEarnedPoints)} pts
                         </span>
                         <p className="mt-1 text-[10px] text-white/35">
-                          {player.sessionEarnedPoints}/{player.sessionAvailablePoints || player.sessionEarnedPoints} live
+                          {formatLockInPoints(player.sessionEarnedPoints)}/{formatLockInPoints(player.sessionAvailablePoints || player.sessionEarnedPoints)} live
                         </p>
                       </div>
                     </div>
