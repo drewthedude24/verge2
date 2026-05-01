@@ -224,7 +224,7 @@ function buildScoreEntriesForPlan({
       const targetPoints = getBlockTargetPoints(block);
       const earnedPoints =
         typeof block.earned_points === "number" && Number.isFinite(block.earned_points)
-          ? Math.min(targetPoints, Math.max(0, Math.round(block.earned_points)))
+          ? Math.max(0, Math.round(block.earned_points))
           : durationSeconds > 0
             ? Math.min(targetPoints, Math.floor(targetPoints * (trackedSeconds / durationSeconds)))
             : 0;
@@ -247,14 +247,14 @@ function buildScoreEntriesForPlan({
 
 function summarizeEntries(entries: ScoreEntry[]): ScoreboardSummary {
   const totalEarnedPoints = entries.reduce((sum, entry) => sum + entry.earnedPoints, 0);
-  const totalAvailablePoints = entries.reduce((sum, entry) => sum + entry.targetPoints, 0);
+  const totalAvailablePoints = entries.reduce((sum, entry) => sum + Math.max(entry.targetPoints, entry.earnedPoints), 0);
   const currentEntry = entries.find((entry) => entry.isCurrent) || null;
 
   return {
     totalEarnedPoints,
     totalAvailablePoints,
     currentEarnedPoints: currentEntry?.earnedPoints || 0,
-    currentTargetPoints: currentEntry?.targetPoints || 0,
+    currentTargetPoints: currentEntry ? Math.max(currentEntry.targetPoints, currentEntry.earnedPoints) : 0,
     currentElapsedSeconds: currentEntry?.elapsedSeconds || 0,
     entries,
     completedEntries: entries.filter((entry) => entry.status === "completed" || entry.earnedPoints > 0),

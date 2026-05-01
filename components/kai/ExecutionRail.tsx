@@ -29,7 +29,9 @@ interface ExecutionRailProps {
   lockInWarningCount: number;
   lockInPenaltyPoints: number;
   lockInDownSeconds: number;
+  lockInEyesAwaySeconds: number;
   lockInAlertActive: boolean;
+  lockInPointsMultiplier: number;
   onUpdateBlockStatus: (blockId: string, status: KaiExecutionBlock["status"]) => void;
   onStartTimer: () => void;
   onPauseTimer: () => void;
@@ -129,6 +131,7 @@ function lockInStatusCopy({
   paperMode,
   phase,
   downSeconds,
+  eyesAwaySeconds,
   warningCount,
   timerRunning,
 }: {
@@ -136,6 +139,7 @@ function lockInStatusCopy({
   paperMode: LockInPaperMode | null;
   phase: LockInMonitorPhase;
   downSeconds: number;
+  eyesAwaySeconds: number;
   warningCount: number;
   timerRunning: boolean;
 }) {
@@ -167,11 +171,19 @@ function lockInStatusCopy({
     return `Red lock-in warning active. This task has ${warningCount} warning${warningCount === 1 ? "" : "s"} so far.`;
   }
 
-  if (downSeconds > 0) {
-    return `Looking down for ${formatTrackedDuration(downSeconds)}. Verge will warn you if it stays that way too long.`;
+  if (downSeconds > 0 || eyesAwaySeconds > 0) {
+    const parts = [];
+    if (downSeconds > 0) {
+      parts.push(`looking down for ${formatTrackedDuration(downSeconds)}`);
+    }
+    if (eyesAwaySeconds > 0) {
+      parts.push(`eyes off-screen for ${formatTrackedDuration(eyesAwaySeconds)}`);
+    }
+
+    return `${parts.join(" · ")}. Verge will warn you if either one stays that way too long.`;
   }
 
-  return "Computer-only lock-in is active. Verge is watching for long downward looks that usually mean phone distraction.";
+  return "Computer-only lock-in is active. Verge is watching for long downward looks and for eyes drifting off-screen like a phone distraction, and this task earns double points while you stay locked in.";
 }
 
 export default function ExecutionRail({
@@ -194,7 +206,9 @@ export default function ExecutionRail({
   lockInWarningCount,
   lockInPenaltyPoints,
   lockInDownSeconds,
+  lockInEyesAwaySeconds,
   lockInAlertActive,
+  lockInPointsMultiplier,
   onUpdateBlockStatus,
   onStartTimer,
   onPauseTimer,
@@ -298,6 +312,11 @@ export default function ExecutionRail({
                 <span className="rounded-full border border-orange-300/20 bg-orange-300/10 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-orange-100">
                   {formatLockInPoints(currentScoreEntry?.targetPoints || getBlockTargetPoints(currentBlock))} pts
                 </span>
+                {lockInPointsMultiplier > 1 ? (
+                  <span className="rounded-full border border-emerald-300/20 bg-emerald-300/10 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-emerald-100">
+                    {lockInPointsMultiplier}x points
+                  </span>
+                ) : null}
                 <span className="rounded-full border border-white/10 bg-white/6 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-white/60">
                   {currentScoreEntry?.priorityBand || "medium"}
                 </span>
@@ -432,6 +451,11 @@ export default function ExecutionRail({
                     Downward look timer: {formatTrackedDuration(lockInDownSeconds)}
                   </p>
                 ) : null}
+                {lockInModeEnabled && lockInPaperMode === "computer_only" && lockInEyesAwaySeconds > 0 ? (
+                  <p className="mt-2 text-[11px] font-medium text-amber-100/80">
+                    Eyes off-screen timer: {formatTrackedDuration(lockInEyesAwaySeconds)}
+                  </p>
+                ) : null}
 
                 {lockInCameraError ? (
                   <p className="mt-3 text-[11px] leading-5 text-red-100/80">{lockInCameraError}</p>
@@ -443,6 +467,7 @@ export default function ExecutionRail({
                     paperMode: lockInPaperMode,
                     phase: lockInMonitorPhase,
                     downSeconds: lockInDownSeconds,
+                    eyesAwaySeconds: lockInEyesAwaySeconds,
                     warningCount: lockInWarningCount,
                     timerRunning,
                   })}

@@ -11,6 +11,8 @@ export type LockInBaseline = {
   eyeY: number;
   noseY: number;
   pitchDegrees: number | null;
+  gazeHorizontal: number | null;
+  gazeVertical: number | null;
   samples: number;
 };
 
@@ -20,6 +22,10 @@ export type LockInFrameEvaluation = {
   noseY: number | null;
   pitchDegrees: number | null;
   downSignal: boolean;
+  gazeHorizontal: number | null;
+  gazeVertical: number | null;
+  eyesAwaySignal: boolean;
+  eyesAwayLabel: "left" | "right" | "up" | "down" | null;
 };
 
 const MEDIAPIPE_WASM_URL = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision/wasm";
@@ -33,6 +39,8 @@ export function createEmptyLockInBaseline(): LockInBaseline {
     eyeY: 0,
     noseY: 0,
     pitchDegrees: null,
+    gazeHorizontal: null,
+    gazeVertical: null,
     samples: 0,
   };
 }
@@ -71,6 +79,57 @@ function averageLandmarkY(landmarks: NormalizedLandmark[], indices: number[]) {
   return values.reduce((sum, value) => sum + value, 0) / values.length;
 }
 
+function averageLandmarkX(landmarks: NormalizedLandmark[], indices: number[]) {
+  const values = indices
+    .map((index) => landmarks[index]?.x)
+    .filter((value): value is number => typeof value === "number" && Number.isFinite(value));
+
+  if (!values.length) {
+    return null;
+  }
+
+  return values.reduce((sum, value) => sum + value, 0) / values.length;
+}
+
+function computeIrisRatio({
+  landmarks,
+  irisIndices,
+  horizontalIndices,
+  verticalIndices,
+}: {
+  landmarks: NormalizedLandmark[];
+  irisIndices: number[];
+  horizontalIndices: number[];
+  verticalIndices: number[];
+}) {
+  const irisCenterX = averageLandmarkX(landmarks, irisIndices);
+  const irisCenterY = averageLandmarkY(landmarks, irisIndices);
+  const horizontalValues = horizontalIndices
+    .map((index) => landmarks[index]?.x)
+    .filter((value): value is number => typeof value === "number" && Number.isFinite(value));
+  const verticalValues = verticalIndices
+    .map((index) => landmarks[index]?.y)
+    .filter((value): value is number => typeof value === "number" && Number.isFinite(value));
+
+  if (irisCenterX == null || irisCenterY == null || horizontalValues.length < 2 || verticalValues.length < 2) {
+    return null;
+  }
+
+  const minX = Math.min(...horizontalValues);
+  const maxX = Math.max(...horizontalValues);
+  const minY = Math.min(...verticalValues);
+  const maxY = Math.max(...verticalValues);
+
+  if (maxX - minX < 0.01 || maxY - minY < 0.01) {
+    return null;
+  }
+
+  return {
+    horizontal: (irisCenterX - minX) / (maxX - minX),
+    vertical: (irisCenterY - minY) / (maxY - minY),
+  };
+}
+
 function readPitchDegrees(matrix: Matrix | null | undefined) {
   const values = matrix?.data;
   if (!values || values.length < 16) {
@@ -98,11 +157,25 @@ export function updateLockInBaseline(baseline: LockInBaseline, evaluation: LockI
       : baseline.pitchDegrees == null
         ? evaluation.pitchDegrees
         : baseline.pitchDegrees * (1 - alpha) + evaluation.pitchDegrees * alpha;
+  const nextHorizontal =
+    evaluation.gazeHorizontal == null
+      ? baseline.gazeHorizontal
+      : baseline.gazeHorizontal == null
+        ? evaluation.gazeHorizontal
+        : baseline.gazeHorizontal * (1 - alpha) + evaluation.gazeHorizontal * alpha;
+  const nextVertical =
+    evaluation.gazeVertical == null
+      ? baseline.gazeVertical
+      : baseline.gazeVertical == null
+        ? evaluation.gazeVertical
+        : baseline.gazeVertical * (1 - alpha) + evaluation.gazeVertical * alpha;
 
   return {
     eyeY: baseline.samples === 0 ? evaluation.eyeY : baseline.eyeY * (1 - alpha) + evaluation.eyeY * alpha,
     noseY: baseline.samples === 0 ? evaluation.noseY : baseline.noseY * (1 - alpha) + evaluation.noseY * alpha,
     pitchDegrees: nextPitch,
+    gazeHorizontal: nextHorizontal,
+    gazeVertical: nextVertical,
     samples: baseline.samples + 1,
   };
 }
@@ -123,12 +196,32 @@ export function evaluateLockInFrame({
       noseY: null,
       pitchDegrees: null,
       downSignal: false,
+      gazeHorizontal: null,
+      gazeVertical: null,
+      eyesAwaySignal: false,
+      eyesAwayLabel: null,
     };
   }
 
   const eyeY = averageLandmarkY(landmarks, [33, 133, 263, 362]);
   const noseY = averageLandmarkY(landmarks, [1]);
   const pitchDegrees = readPitchDegrees(matrix);
+  const leftIris = computeIrisRatio({
+    landmarks,
+    irisIndices: [468, 469, 470, 471, 472],
+    horizontalIndices: [33, 133],
+    verticalIndices: [159, 145],
+  });
+  const rightIris = computeIrisRatio({
+    landmarks,
+    irisIndices: [473, 474, 475, 476, 477],
+    horizontalIndices: [362, 263],
+    verticalIndices: [386, 374],
+  });
+  const gazeHorizontal =
+    leftIris && rightIris ? (leftIris.horizontal + rightIris.horizontal) / 2 : leftIris?.horizontal ?? rightIris?.horizontal ?? null;
+  const gazeVertical =
+    leftIris && rightIris ? (leftIris.vertical + rightIris.vertical) / 2 : leftIris?.vertical ?? rightIris?.vertical ?? null;
 
   if (eyeY == null || noseY == null) {
     return {
@@ -137,6 +230,10 @@ export function evaluateLockInFrame({
       noseY: null,
       pitchDegrees,
       downSignal: false,
+      gazeHorizontal,
+      gazeVertical,
+      eyesAwaySignal: false,
+      eyesAwayLabel: null,
     };
   }
 
@@ -144,10 +241,31 @@ export function evaluateLockInFrame({
   const noseShift = baseline.samples > 0 ? noseY - baseline.noseY : 0;
   const pitchShift =
     baseline.samples > 0 && baseline.pitchDegrees != null && pitchDegrees != null ? pitchDegrees - baseline.pitchDegrees : 0;
+  const horizontalShift =
+    baseline.samples > 0 && baseline.gazeHorizontal != null && gazeHorizontal != null ? gazeHorizontal - baseline.gazeHorizontal : 0;
+  const verticalShift =
+    baseline.samples > 0 && baseline.gazeVertical != null && gazeVertical != null ? gazeVertical - baseline.gazeVertical : 0;
 
   const downSignal =
     baseline.samples >= 8 &&
     ((eyeShift > 0.05 && noseShift > 0.055) || noseShift > 0.07 || (pitchShift > 16 && eyeShift > 0.025));
+  const eyesAwaySignal =
+    baseline.samples >= 8 &&
+    baseline.gazeHorizontal != null &&
+    baseline.gazeVertical != null &&
+    gazeHorizontal != null &&
+    gazeVertical != null &&
+    (Math.abs(horizontalShift) > 0.15 || Math.abs(verticalShift) > 0.13);
+  const eyesAwayLabel: LockInFrameEvaluation["eyesAwayLabel"] =
+    !eyesAwaySignal
+      ? null
+      : Math.abs(verticalShift) >= Math.abs(horizontalShift)
+        ? verticalShift > 0
+          ? "down"
+          : "up"
+        : horizontalShift > 0
+          ? "right"
+          : "left";
 
   return {
     faceDetected: true,
@@ -155,6 +273,10 @@ export function evaluateLockInFrame({
     noseY,
     pitchDegrees,
     downSignal,
+    gazeHorizontal,
+    gazeVertical,
+    eyesAwaySignal,
+    eyesAwayLabel,
   };
 }
 

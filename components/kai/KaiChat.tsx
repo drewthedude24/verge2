@@ -126,6 +126,49 @@ function roundLockInPoints(value: number) {
   return Math.max(0, Math.round((value + Number.EPSILON) * 10) / 10);
 }
 
+function applyLockInBonusToSummary(summary: ReturnType<typeof buildScoreboardSummary>, multiplier: number) {
+  if (multiplier <= 1) {
+    return summary;
+  }
+
+  let currentBoost = 0;
+  let targetBoost = 0;
+  const entries = summary.entries.map((entry) => {
+    if (!entry.isCurrent) {
+      return entry;
+    }
+
+    const nextEarnedPoints = Math.max(entry.earnedPoints, Math.round(entry.earnedPoints * multiplier));
+    const nextTargetPoints = Math.max(entry.targetPoints, Math.round(entry.targetPoints * multiplier));
+    currentBoost = nextEarnedPoints - entry.earnedPoints;
+    targetBoost = nextTargetPoints - entry.targetPoints;
+
+    return {
+      ...entry,
+      earnedPoints: nextEarnedPoints,
+      targetPoints: nextTargetPoints,
+    };
+  });
+
+  return {
+    ...summary,
+    entries,
+    totalEarnedPoints: summary.totalEarnedPoints + currentBoost,
+    totalAvailablePoints: summary.totalAvailablePoints + targetBoost,
+    currentEarnedPoints: summary.currentEarnedPoints + currentBoost,
+    currentTargetPoints: summary.currentTargetPoints + targetBoost,
+    completedEntries: summary.completedEntries.map((entry) =>
+      entry.isCurrent
+        ? {
+            ...entry,
+            earnedPoints: Math.max(entry.earnedPoints, Math.round(entry.earnedPoints * multiplier)),
+            targetPoints: Math.max(entry.targetPoints, Math.round(entry.targetPoints * multiplier)),
+          }
+        : entry,
+    ),
+  };
+}
+
 function KaiLogo({ size = 16 }: { size?: number }) {
   return (
     <svg width={size} height={size} viewBox="0 0 16 16" fill="none" aria-hidden="true">
@@ -611,6 +654,7 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
   const [lockInWarningCount, setLockInWarningCount] = useState(0);
   const [lockInPenaltyPoints, setLockInPenaltyPoints] = useState(0);
   const [lockInDownSeconds, setLockInDownSeconds] = useState(0);
+  const [lockInEyesAwaySeconds, setLockInEyesAwaySeconds] = useState(0);
   const [lockInAlert, setLockInAlert] = useState<LockInAlertState | null>(null);
   const [multiplayerPlayers, setMultiplayerPlayers] = useState<LeaderboardPlayer[]>([]);
   const [multiplayerLoading, setMultiplayerLoading] = useState(false);
@@ -634,9 +678,12 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
   const lockInLastSampleAtRef = useRef(0);
   const lockInBaselineRef = useRef(createEmptyLockInBaseline());
   const lockInDownSinceRef = useRef<number | null>(null);
+  const lockInEyesAwaySinceRef = useRef<number | null>(null);
   const lockInResumeTimerRef = useRef(false);
   const lockInCalibrationUntilRef = useRef(0);
   const lockInLandmarkerRef = useRef<Awaited<ReturnType<typeof loadLockInFaceLandmarker>> | null>(null);
+  const lockInVisionRetryCountRef = useRef(0);
+  const lockInLastVideoTimeRef = useRef<number>(-1);
   const isDesktop = useSyncExternalStore(subscribeToDesktopBridge, getDesktopSnapshot, () => false);
   const browserSpeechSupported = useSyncExternalStore(subscribeToSpeechSupport, getSpeechSupportSnapshot, () => false);
   const electronPlatform = typeof window !== "undefined" ? window.electron?.platform || null : null;
@@ -914,19 +961,28 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
       }),
     [activeRunId, blockElapsedSeconds, currentTimerKey, executionPlan, taskFlowHistoryRuns],
   );
+  const lockInPointsMultiplier = lockInModeEnabled && lockInPaperMode === "computer_only" ? 2 : 1;
+  const boostedScoreboard = useMemo(
+    () => applyLockInBonusToSummary(scoreboard, lockInPointsMultiplier),
+    [lockInPointsMultiplier, scoreboard],
+  );
+  const boostedAccountScoreboard = useMemo(
+    () => applyLockInBonusToSummary(accountScoreboard, lockInPointsMultiplier),
+    [accountScoreboard, lockInPointsMultiplier],
+  );
   const adjustedScoreboard = useMemo(
     () => ({
-      ...scoreboard,
-      totalEarnedPoints: roundLockInPoints(Math.max(0, scoreboard.totalEarnedPoints - lockInPenaltyPoints)),
+      ...boostedScoreboard,
+      totalEarnedPoints: roundLockInPoints(Math.max(0, boostedScoreboard.totalEarnedPoints - lockInPenaltyPoints)),
     }),
-    [lockInPenaltyPoints, scoreboard],
+    [boostedScoreboard, lockInPenaltyPoints],
   );
   const adjustedAccountScoreboard = useMemo(
     () => ({
-      ...accountScoreboard,
-      totalEarnedPoints: roundLockInPoints(Math.max(0, accountScoreboard.totalEarnedPoints - lockInPenaltyPoints)),
+      ...boostedAccountScoreboard,
+      totalEarnedPoints: roundLockInPoints(Math.max(0, boostedAccountScoreboard.totalEarnedPoints - lockInPenaltyPoints)),
     }),
-    [accountScoreboard, lockInPenaltyPoints],
+    [boostedAccountScoreboard, lockInPenaltyPoints],
   );
   const penaltyStorageKey = useMemo(() => {
     if (viewer.id) {
@@ -1033,10 +1089,14 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
     }
 
     lockInLastSampleAtRef.current = 0;
+    lockInLastVideoTimeRef.current = -1;
     lockInDownSinceRef.current = null;
+    lockInEyesAwaySinceRef.current = null;
     lockInCalibrationUntilRef.current = 0;
+    lockInVisionRetryCountRef.current = 0;
     lockInBaselineRef.current = createEmptyLockInBaseline();
     setLockInDownSeconds(0);
+    setLockInEyesAwaySeconds(0);
 
     if (lockInStreamRef.current) {
       for (const track of lockInStreamRef.current.getTracks()) {
@@ -1107,7 +1167,9 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
     setLockInAlert(null);
     setLockInCameraError(null);
     setLockInDownSeconds(0);
+    setLockInEyesAwaySeconds(0);
     lockInDownSinceRef.current = null;
+    lockInEyesAwaySinceRef.current = null;
     lockInBaselineRef.current = createEmptyLockInBaseline();
 
     if (!lockInModeEnabled) {
@@ -1212,7 +1274,11 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
         lockInBaselineRef.current = createEmptyLockInBaseline();
         lockInCalibrationUntilRef.current = performance.now() + 3200;
         lockInDownSinceRef.current = null;
+        lockInEyesAwaySinceRef.current = null;
+        lockInVisionRetryCountRef.current = 0;
+        lockInLastVideoTimeRef.current = -1;
         setLockInDownSeconds(0);
+        setLockInEyesAwaySeconds(0);
         setLockInMonitorPhase("calibrating");
 
         const step = () => {
@@ -1232,16 +1298,37 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
             return;
           }
 
+          if (video.currentTime === lockInLastVideoTimeRef.current) {
+            lockInFrameRef.current = window.requestAnimationFrame(step);
+            return;
+          }
+          lockInLastVideoTimeRef.current = video.currentTime;
+
           let evaluation;
           try {
             const result = landmarker.detectForVideo(video, now);
+            lockInVisionRetryCountRef.current = 0;
             evaluation = evaluateLockInFrame({
               landmarks: result.faceLandmarks?.[0],
               matrix: result.facialTransformationMatrixes?.[0],
               baseline: lockInBaselineRef.current,
             });
           } catch (error) {
-            console.error("[Verge] Lock-in mode vision frame failed:", error);
+            const message =
+              error instanceof Error ? error.message : typeof error === "string" ? error : "Lock-in mode hit a camera runtime issue.";
+            lockInVisionRetryCountRef.current += 1;
+            const allowExtendedWarmupRetry =
+              /xnnpack|delegate|tensor/i.test(message) && lockInVisionRetryCountRef.current <= 12;
+
+            if (
+              lockInVisionRetryCountRef.current <= 6 ||
+              allowExtendedWarmupRetry
+            ) {
+              setLockInMonitorPhase("calibrating");
+              lockInFrameRef.current = window.requestAnimationFrame(step);
+              return;
+            }
+
             clearLockInMonitoring();
             setLockInMonitorPhase("error");
             setLockInCameraError("Lock-in mode hit a camera/vision runtime issue. Turn it off and back on to retry.");
@@ -1250,7 +1337,9 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
 
           if (!evaluation.faceDetected) {
             lockInDownSinceRef.current = null;
+            lockInEyesAwaySinceRef.current = null;
             setLockInDownSeconds(0);
+            setLockInEyesAwaySeconds(0);
             lockInFrameRef.current = window.requestAnimationFrame(step);
             return;
           }
@@ -1262,7 +1351,9 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
             lockInBaselineRef.current = updateLockInBaseline(lockInBaselineRef.current, evaluation);
             setLockInMonitorPhase("calibrating");
             lockInDownSinceRef.current = null;
+            lockInEyesAwaySinceRef.current = null;
             setLockInDownSeconds(0);
+            setLockInEyesAwaySeconds(0);
             lockInFrameRef.current = window.requestAnimationFrame(step);
             return;
           }
@@ -1276,13 +1367,39 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
             setLockInMonitorPhase("monitoring");
 
             if (downwardSeconds >= LOCK_IN_DOWN_WARNING_AFTER_SECONDS) {
-              applyLockInWarning("Phone or distraction detected");
+              applyLockInWarning("You looked down for too long");
               return;
             }
           } else {
-            lockInBaselineRef.current = updateLockInBaseline(lockInBaselineRef.current, evaluation);
             lockInDownSinceRef.current = null;
             setLockInDownSeconds(0);
+          }
+
+          if (evaluation.eyesAwaySignal) {
+            if (lockInEyesAwaySinceRef.current === null) {
+              lockInEyesAwaySinceRef.current = now;
+            }
+            const eyesAwaySeconds = Math.max(0, Math.floor((now - lockInEyesAwaySinceRef.current) / 1000));
+            setLockInEyesAwaySeconds(eyesAwaySeconds);
+            setLockInMonitorPhase("monitoring");
+
+            if (eyesAwaySeconds >= LOCK_IN_DOWN_WARNING_AFTER_SECONDS) {
+              const directionLabel =
+                evaluation.eyesAwayLabel === "left" || evaluation.eyesAwayLabel === "right"
+                  ? `eyes were pointed ${evaluation.eyesAwayLabel}`
+                  : evaluation.eyesAwayLabel === "down"
+                    ? "eyes stayed off-screen"
+                    : "eyes drifted away from the screen";
+              applyLockInWarning(`Your ${directionLabel} for too long`);
+              return;
+            }
+          } else {
+            lockInEyesAwaySinceRef.current = null;
+            setLockInEyesAwaySeconds(0);
+          }
+
+          if (!evaluation.downSignal && !evaluation.eyesAwaySignal) {
+            lockInBaselineRef.current = updateLockInBaseline(lockInBaselineRef.current, evaluation);
             setLockInMonitorPhase("monitoring");
           }
 
@@ -1291,7 +1408,7 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
 
         lockInFrameRef.current = window.requestAnimationFrame(step);
       } catch (error) {
-        console.error("[Verge] Lock-in mode camera failed:", error);
+        console.warn("[Verge] Lock-in mode camera failed:", error);
         clearLockInMonitoring();
         if (!cancelled) {
           setLockInMonitorPhase("error");
@@ -2312,7 +2429,7 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
               0,
           )
         : 0;
-      const earnedEntry = blockKey ? scoreboard.entries.find((entry) => entry.blockKey === blockKey) : null;
+      const earnedEntry = blockKey ? adjustedScoreboard.entries.find((entry) => entry.blockKey === blockKey) : null;
       if (!targetBlock) {
         return;
       }
@@ -2333,7 +2450,7 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
       currentBlock?.id,
       executionPlan,
       persistBlockProgress,
-      scoreboard.entries,
+      adjustedScoreboard.entries,
     ],
   );
 
@@ -2344,7 +2461,7 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
 
     const blockKey = `${activePlanKey}:${currentBlock.id}`;
     const trackedElapsed = Math.max(0, blockElapsedSeconds[blockKey] || 0);
-    const earnedEntry = scoreboard.entries.find((entry) => entry.blockKey === blockKey);
+    const earnedEntry = adjustedScoreboard.entries.find((entry) => entry.blockKey === blockKey);
 
     await persistBlockProgress({
       runId: activeRunId,
@@ -2356,7 +2473,7 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
       syncLocal: false,
       reportErrors: false,
     });
-  }, [activePlanKey, activeRunId, blockElapsedSeconds, currentBlock, persistBlockProgress, scoreboard.entries, supabase]);
+  }, [activePlanKey, activeRunId, adjustedScoreboard.entries, blockElapsedSeconds, currentBlock, persistBlockProgress, supabase]);
 
   useEffect(() => {
     if (!timerRunning || !currentTimerKey) {
@@ -2449,6 +2566,7 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
       setLockInAlert(null);
       setLockInCameraError(null);
       setLockInDownSeconds(0);
+      setLockInEyesAwaySeconds(0);
       setLockInModeEnabled(false);
       setLockInMonitorPhase("off");
       return;
@@ -2457,6 +2575,7 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
     setLockInAlert(null);
     setLockInCameraError(null);
     setLockInDownSeconds(0);
+    setLockInEyesAwaySeconds(0);
     setLockInModeEnabled(true);
     setLockInMonitorPhase(
       lockInPaperMode === "paper_allowed" ? "monitoring" : lockInPaperMode === "computer_only" && timerRunning ? "requesting_camera" : "setup",
@@ -2469,7 +2588,9 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
       setLockInAlert(null);
       setLockInCameraError(null);
       setLockInDownSeconds(0);
+      setLockInEyesAwaySeconds(0);
       lockInDownSinceRef.current = null;
+      lockInEyesAwaySinceRef.current = null;
       lockInBaselineRef.current = createEmptyLockInBaseline();
 
       if (mode === "paper_allowed") {
@@ -2771,13 +2892,13 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
         <div className="min-w-0">
           <p className="truncate text-[11px] font-medium text-white/88">{currentBlock.title}</p>
           <p className="truncate text-[10px] text-white/45">
-            {formatLockInPoints(scoreboard.currentEarnedPoints)}/{formatLockInPoints(scoreboard.currentTargetPoints)} pts earned
+            {formatLockInPoints(adjustedScoreboard.currentEarnedPoints)}/{formatLockInPoints(adjustedScoreboard.currentTargetPoints)} pts earned
           </p>
         </div>
       </div>
       <div className="flex shrink-0 items-center gap-2">
         <span className="rounded-full border border-orange-300/20 bg-orange-300/10 px-2.5 py-1 text-[9px] font-semibold uppercase tracking-[0.16em] text-orange-100">
-          {formatLockInPoints(scoreboard.currentEarnedPoints)}/{formatLockInPoints(scoreboard.currentTargetPoints)} pts
+          {formatLockInPoints(adjustedScoreboard.currentEarnedPoints)}/{formatLockInPoints(adjustedScoreboard.currentTargetPoints)} pts
         </span>
         <div className="rounded-[16px] border border-white/12 bg-white/10 px-3 py-1.5 text-center shadow-[0_8px_24px_rgba(0,0,0,0.18)]">
           <p className="text-[8px] font-semibold uppercase tracking-[0.2em] text-white/45">Timer</p>
@@ -3586,7 +3707,9 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
         lockInWarningCount={lockInWarningCount}
         lockInPenaltyPoints={lockInPenaltyPoints}
         lockInDownSeconds={lockInDownSeconds}
+        lockInEyesAwaySeconds={lockInEyesAwaySeconds}
         lockInAlertActive={Boolean(lockInAlert)}
+        lockInPointsMultiplier={lockInPointsMultiplier}
         onUpdateBlockStatus={handleUpdateBlockStatus}
         onStartTimer={handleStartTimer}
         onPauseTimer={handlePauseTimer}
