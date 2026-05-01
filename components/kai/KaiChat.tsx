@@ -64,6 +64,7 @@ import {
   LOCK_IN_PENALTY_AFTER_WARNINGS,
   LOCK_IN_PENALTY_POINTS,
   createEmptyLockInBaseline,
+  detectLockInFrame,
   evaluateLockInFrame,
   formatLockInPoints,
   loadLockInFaceLandmarker,
@@ -1298,6 +1299,11 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
             return;
           }
 
+          if (video.currentTime <= 0 && lockInLastVideoTimeRef.current < 0) {
+            lockInFrameRef.current = window.requestAnimationFrame(step);
+            return;
+          }
+
           if (video.currentTime === lockInLastVideoTimeRef.current) {
             lockInFrameRef.current = window.requestAnimationFrame(step);
             return;
@@ -1306,7 +1312,7 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
 
           let evaluation;
           try {
-            const result = landmarker.detectForVideo(video, now);
+            const result = detectLockInFrame({ landmarker, video, now });
             lockInVisionRetryCountRef.current = 0;
             evaluation = evaluateLockInFrame({
               landmarks: result.faceLandmarks?.[0],

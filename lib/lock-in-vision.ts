@@ -31,8 +31,70 @@ export type LockInFrameEvaluation = {
 const MEDIAPIPE_WASM_URL = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision/wasm";
 const FACE_LANDMARKER_MODEL_URL =
   "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task";
+const LOCK_IN_SUPPRESSED_CONSOLE_PATTERNS = [/Created TensorFlow Lite XNNPACK delegate for CPU/i];
 
 let faceLandmarkerPromise: Promise<FaceLandmarker> | null = null;
+
+function shouldSuppressLockInConsoleArgs(args: unknown[]) {
+  const joined = args
+    .map((value) => {
+      if (typeof value === "string") {
+        return value;
+      }
+
+      if (value instanceof Error) {
+        return value.message;
+      }
+
+      try {
+        return JSON.stringify(value);
+      } catch {
+        return String(value);
+      }
+    })
+    .join(" ");
+
+  return LOCK_IN_SUPPRESSED_CONSOLE_PATTERNS.some((pattern) => pattern.test(joined));
+}
+
+export function detectLockInFrame({
+  landmarker,
+  video,
+  now,
+}: {
+  landmarker: FaceLandmarker;
+  video: HTMLVideoElement;
+  now: number;
+}) {
+  const originalConsoleError = console.error;
+  const originalConsoleWarn = console.warn;
+
+  const patchedConsoleError: typeof console.error = (...args) => {
+    if (shouldSuppressLockInConsoleArgs(args)) {
+      return;
+    }
+
+    originalConsoleError(...args);
+  };
+
+  const patchedConsoleWarn: typeof console.warn = (...args) => {
+    if (shouldSuppressLockInConsoleArgs(args)) {
+      return;
+    }
+
+    originalConsoleWarn(...args);
+  };
+
+  console.error = patchedConsoleError;
+  console.warn = patchedConsoleWarn;
+
+  try {
+    return landmarker.detectForVideo(video, now);
+  } finally {
+    console.error = originalConsoleError;
+    console.warn = originalConsoleWarn;
+  }
+}
 
 export function createEmptyLockInBaseline(): LockInBaseline {
   return {
@@ -249,13 +311,20 @@ export function evaluateLockInFrame({
   const downSignal =
     baseline.samples >= 8 &&
     ((eyeShift > 0.05 && noseShift > 0.055) || noseShift > 0.07 || (pitchShift > 16 && eyeShift > 0.025));
+  const horizontalCenterShift = gazeHorizontal == null ? 0 : Math.abs(gazeHorizontal - 0.5);
+  const verticalCenterShift = gazeVertical == null ? 0 : Math.abs(gazeVertical - 0.5);
   const eyesAwaySignal =
-    baseline.samples >= 8 &&
+    baseline.samples >= 6 &&
     baseline.gazeHorizontal != null &&
     baseline.gazeVertical != null &&
     gazeHorizontal != null &&
     gazeVertical != null &&
-    (Math.abs(horizontalShift) > 0.15 || Math.abs(verticalShift) > 0.13);
+    (
+      Math.abs(horizontalShift) > 0.11 ||
+      Math.abs(verticalShift) > 0.1 ||
+      horizontalCenterShift > 0.16 ||
+      verticalCenterShift > 0.14
+    );
   const eyesAwayLabel: LockInFrameEvaluation["eyesAwayLabel"] =
     !eyesAwaySignal
       ? null
