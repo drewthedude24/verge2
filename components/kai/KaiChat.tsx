@@ -1149,7 +1149,7 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
   }, [clearLockInMonitoring]);
 
   useEffect(() => {
-    if (!lockInModeEnabled || lockInPaperMode !== "computer_only" || !currentBlock || !timerRunning || lockInAlert) {
+    if (!lockInModeEnabled || lockInPaperMode !== "computer_only" || !currentTimerKey || !timerRunning || lockInAlert) {
       const frame = window.requestAnimationFrame(() => {
         clearLockInMonitoring();
         if (!lockInModeEnabled) {
@@ -1232,12 +1232,21 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
             return;
           }
 
-          const result = landmarker.detectForVideo(video, now);
-          const evaluation = evaluateLockInFrame({
-            landmarks: result.faceLandmarks?.[0],
-            matrix: result.facialTransformationMatrixes?.[0],
-            baseline: lockInBaselineRef.current,
-          });
+          let evaluation;
+          try {
+            const result = landmarker.detectForVideo(video, now);
+            evaluation = evaluateLockInFrame({
+              landmarks: result.faceLandmarks?.[0],
+              matrix: result.facialTransformationMatrixes?.[0],
+              baseline: lockInBaselineRef.current,
+            });
+          } catch (error) {
+            console.error("[Verge] Lock-in mode vision frame failed:", error);
+            clearLockInMonitoring();
+            setLockInMonitorPhase("error");
+            setLockInCameraError("Lock-in mode hit a camera/vision runtime issue. Turn it off and back on to retry.");
+            return;
+          }
 
           if (!evaluation.faceDetected) {
             lockInDownSinceRef.current = null;
@@ -1301,7 +1310,7 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
       cancelled = true;
       clearLockInMonitoring();
     };
-  }, [applyLockInWarning, clearLockInMonitoring, currentBlock, lockInAlert, lockInModeEnabled, lockInPaperMode, timerRunning]);
+  }, [applyLockInWarning, clearLockInMonitoring, currentTimerKey, lockInAlert, lockInModeEnabled, lockInPaperMode, timerRunning]);
 
   useEffect(() => {
     let cancelled = false;
