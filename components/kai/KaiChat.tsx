@@ -2505,8 +2505,8 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
                 </p>
                 <p className="mt-1 text-xs text-white/45">
                   {fullExecutionPlan
-                    ? "Holidays are pre-labeled. Imported plan blocks keep their own colors by type."
-                    : "Connect Google here, then generate or reopen a plan before syncing it to your calendar."}
+                    ? "This is your in-app calendar. Holidays are pre-labeled, synced plan blocks stay visible here, and Google just mirrors them."
+                    : "This is your in-app calendar. Connect Google here, then generate or reopen a plan before syncing it."}
                 </p>
                 <div className="mt-3 flex flex-wrap items-center gap-2">
                   <span
@@ -2571,6 +2571,12 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
                 </div>
               ) : null}
 
+              {googleCalendarStatus?.connected ? (
+                <div className="mb-4 rounded-[20px] border border-sky-300/20 bg-sky-300/10 px-4 py-3 text-sm text-sky-100">
+                  Google Calendar is connected, but you can keep using this Verge calendar as the main view. Sync just mirrors events into Google.
+                </div>
+              ) : null}
+
               {calendarLoading ? (
                 <div className="rounded-[24px] border border-white/10 bg-white/[0.04] px-5 py-6 text-sm text-white/58">
                   Loading calendar events…
@@ -2607,6 +2613,15 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
                                   <p className="truncate text-sm font-semibold text-white/92">{event.title}</p>
                                   <span className="rounded-full border border-white/10 bg-white/6 px-2 py-1 text-[10px] uppercase tracking-[0.14em] text-white/55">
                                     {event.kind}
+                                  </span>
+                                  <span
+                                    className={`rounded-full border px-2 py-1 text-[10px] uppercase tracking-[0.14em] ${
+                                      event.externalProvider === "google"
+                                        ? "border-sky-300/20 bg-sky-300/10 text-sky-100"
+                                        : "border-white/10 bg-white/6 text-white/45"
+                                    }`}
+                                  >
+                                    {event.externalProvider === "google" ? "Google synced" : "Verge only"}
                                   </span>
                                 </div>
                                 <p className="mt-2 text-xs text-white/45">
