@@ -2788,7 +2788,7 @@ export default function KaiChat({ viewer, mode, liveModelLabel, onSignOut }: Kai
 
         await deleteGoogleCalendarEventForUser({
           accessToken,
-          eventId: event.id,
+          eventId: null,
           eventKey: event.eventKey,
           externalEventId: event.externalEventId,
         });

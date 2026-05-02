@@ -29,6 +29,14 @@ type DeleteCalendarEventBody = {
   externalEventId?: string | null;
 };
 
+function isUuid(value: string | null) {
+  if (!value) {
+    return false;
+  }
+
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+}
+
 function buildHeaders() {
   return buildApiCorsHeaders();
 }
@@ -273,12 +281,17 @@ export async function DELETE(request: NextRequest) {
       .eq("user_id", user.id)
       .limit(1);
 
-    if (eventId) {
-      lookup = lookup.eq("id", eventId);
+    if (externalEventId) {
+      lookup = lookup.eq("external_event_id", externalEventId);
     } else if (eventKey) {
       lookup = lookup.eq("event_key", eventKey);
+    } else if (eventId && isUuid(eventId)) {
+      lookup = lookup.eq("id", eventId);
     } else {
-      lookup = lookup.eq("external_event_id", externalEventId);
+      return new Response("Calendar event id is not valid for deletion.", {
+        status: 400,
+        headers: buildHeaders(),
+      });
     }
 
     const { data: storedRow, error: storedRowError } = await lookup.maybeSingle();
@@ -326,12 +339,12 @@ export async function DELETE(request: NextRequest) {
       }
     } else {
       let deleteQuery = admin.from("calendar_events").delete().eq("user_id", user.id);
-      if (eventId) {
-        deleteQuery = deleteQuery.eq("id", eventId);
+      if (externalEventId) {
+        deleteQuery = deleteQuery.eq("external_event_id", externalEventId);
       } else if (eventKey) {
         deleteQuery = deleteQuery.eq("event_key", eventKey);
-      } else if (externalEventId) {
-        deleteQuery = deleteQuery.eq("external_event_id", externalEventId);
+      } else if (eventId && isUuid(eventId)) {
+        deleteQuery = deleteQuery.eq("id", eventId);
       }
 
       const { error } = await deleteQuery;
